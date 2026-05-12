@@ -258,6 +258,10 @@ To deploy the MONAILabel server in a Model Serving endpoint we prepared [ModelSe
 - **Unity Catalog Integration**: Adds the model to the Unity Catalog for organized management.
 - **Serving Endpoint Deployment**: Deploys the model in a serving endpoint for real-time inference.
 
+### MONAI Bundle Inference with MLflow
+
+For a lighter-weight bundle smoke test without starting a MONAILabel server, run [09-MONAI-Flow-Bundle-Inference](09-MONAI-Flow-Bundle-Inference.py). The notebook logs a MONAI bundle as an MLflow pyfunc model, runs inference from a Unity Catalog Volume path, and writes outputs back to the Volume. MONAI-Flow and MONAI runtime dependencies are optional and installed at notebook runtime; model weights are downloaded to the configured Volume and are not committed to this repository.
+
 #### Auto Segmentation with Lakehouse App and Serving Endpoint
 
 https://github.com/user-attachments/assets/8cf62378-ab39-4a89-86ad-c2f231b7a524
@@ -327,5 +331,8 @@ DICOM® is recognized by the International Organization for Standardization as t
 | DICOGNITO            | A library and command line tool for anonymizing DICOM files | MIT  | https://github.com/blairconrad/dicognito |
 | FF3                  | FPE - Format Preserving Encryption with FF3 in Python | Apache-2.0 license  | https://github.com/mysto/python-fpe |
 | Vista3D              | MONAI Versatile Imaging SegmenTation and Annotation model | Apache-2.0 license (code) - NCLS v1 (model weight) | https://github.com/Project-MONAI/VISTA/tree/main/vista3d |
-
+| MONAI                | Medical imaging AI framework used by optional MONAI-Flow bundle notebook | Apache-2.0 license | https://github.com/Project-MONAI/MONAI |
+| MLflow               | Model logging and pyfunc inference for optional MONAI bundle workflow | Apache-2.0 license | https://github.com/mlflow/mlflow |
+| highdicom            | DICOM SEG support for optional MONAI bundle workflows | MIT | https://github.com/ImagingDataCommons/highdicom |
+| nibabel              | NIfTI image I/O for optional MONAI bundle workflows | MIT | https://github.com/nipy/nibabel |
 
