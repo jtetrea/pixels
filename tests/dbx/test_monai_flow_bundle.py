@@ -119,6 +119,7 @@ def test_runtime_requirements_pin_non_breaking_holoscan():
     )
 
     assert "monai-deploy-app-sdk==3.5.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "holoscan==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "holoscan-cu12==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
 
 

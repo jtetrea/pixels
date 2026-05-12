@@ -22,9 +22,9 @@
 import subprocess
 import sys
 
-# GPU serverless may preinstall a newer MONAI Deploy / Holoscan pair.
-# Keep MONAI Deploy current and pin the latest Holoscan wheel that still exposes
-# holoscan.graphs, which MONAI Deploy 3.5 imports.
+# GPU serverless preinstalls most of this stack. Install only the exact packages
+# this workflow needs, without asking pip to resolve or upgrade Databricks-managed
+# packages such as MLflow and Databricks Connect.
 subprocess.check_call(
     [
         sys.executable,
@@ -32,8 +32,12 @@ subprocess.check_call(
         "pip",
         "install",
         "-q",
+        "--no-deps",
         "monai-deploy-app-sdk==3.5.0",
+        "holoscan==4.0.0",
         "holoscan-cu12==4.0.0",
+        "colorama>=0.4.1",
+        "typeguard>=3.0.0",
         "pytorch-ignite>=0.4",
         "numpy-stl>=3.0",
         "trimesh",
