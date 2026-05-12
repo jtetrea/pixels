@@ -262,6 +262,8 @@ To deploy the MONAILabel server in a Model Serving endpoint we prepared [ModelSe
 
 For a DICOM-first smoke test without starting a MONAILabel server, run [09-MONAI-Flow-Bundle-Inference](09-MONAI-Flow-Bundle-Inference.py). The notebook uses the Pixels MONAI deploy helpers to generate a MONAI Deploy app from a public MONAI bundle, log it as an MLflow pyfunc model, run inference on a DICOM series directory from a Unity Catalog Volume, and write DICOM outputs back to the Volume. MONAI runtime dependencies are installed at notebook runtime; model weights are downloaded during app generation and are not committed to this repository.
 
+The notebook is optimized for single-series validation on GPU serverless or GPU ML Runtime compute. Spark batch inference support is available through `MonaiFlowBundleTransformer`, but the validation notebook loads the logged MLflow pyfunc model directly to keep the first DICOM test path simple.
+
 #### Auto Segmentation with Lakehouse App and Serving Endpoint
 
 https://github.com/user-attachments/assets/8cf62378-ab39-4a89-86ad-c2f231b7a524

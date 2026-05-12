@@ -7,8 +7,10 @@ from dbx.pixels.modelserving.bundles.monai_flow import (
     _build_prediction_payload,
     _merge_requirements,
     _normalise_prediction_result,
+    _relax_pipeline_generator_python_constraint,
     log_monai_deploy_app,
     log_monai_flow_bundle,
+    patch_monai_deploy_holoscan_compatibility,
 )
 
 
@@ -110,6 +112,25 @@ def test_log_monai_flow_bundle_validates_deploy_app_before_logging():
 
 def test_log_monai_deploy_app_aliases_legacy_helper():
     assert log_monai_deploy_app is log_monai_flow_bundle
+
+
+def test_relax_pipeline_generator_python_constraint(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('requires-python = ">=3.10,<3.11"\n', encoding="utf-8")
+
+    assert _relax_pipeline_generator_python_constraint(tmp_path)
+    assert pyproject.read_text(encoding="utf-8") == 'requires-python = ">=3.10"\n'
+
+
+def test_patch_monai_deploy_holoscan_compatibility(tmp_path):
+    graphs_dir = tmp_path / "deploy" / "graphs"
+    graphs_dir.mkdir(parents=True)
+    graphs_init = graphs_dir / "__init__.py"
+    graphs_init.write_text("from holoscan.graphs import *\n", encoding="utf-8")
+
+    assert patch_monai_deploy_holoscan_compatibility(str(tmp_path))
+    patched = graphs_init.read_text(encoding="utf-8")
+    assert "holoscan.flow_graphs" in patched
 
 
 def test_transformer_stores_configuration():

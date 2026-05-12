@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - allows local helper tests without MLfl
 
 DEFAULT_PIPELINE_GENERATOR_REPO = "https://github.com/Project-MONAI/monai-deploy-app-sdk.git"
 DEFAULT_PIPELINE_GENERATOR_BRANCH = "main"
+DEFAULT_PIPELINE_GENERATOR_DIR = "/tmp/pixels_monai_flow/tools/pipeline-generator"
 DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "setuptools<82",
     "monai>=1.5",
@@ -83,8 +84,62 @@ def _pipeline_generator_executable() -> Optional[str]:
     return None
 
 
+def patch_monai_deploy_holoscan_compatibility(monai_package_dir: Optional[str] = None) -> bool:
+    """Patch MONAI Deploy imports for Holoscan releases that renamed graphs.
+
+    GPU serverless environments may pair monai-deploy-app-sdk 3.5 with
+    holoscan 4.x. In that combination, MONAI Deploy imports holoscan.graphs,
+    while Holoscan exposes the module as holoscan.flow_graphs.
+    """
+
+    if monai_package_dir is None:
+        try:
+            import monai
+        except ImportError as e:
+            raise MissingMonaiRuntimeDependency(
+                "MONAI is required before applying the Holoscan compatibility patch."
+            ) from e
+        monai_package_dir = os.path.dirname(monai.__file__)
+
+    graphs_init = Path(monai_package_dir) / "deploy" / "graphs" / "__init__.py"
+    if not graphs_init.exists():
+        return False
+
+    content = graphs_init.read_text(encoding="utf-8")
+    if "holoscan.graphs" not in content or "holoscan.flow_graphs" in content:
+        return False
+
+    patched = "\n".join(
+        [
+            "try:",
+            "    from holoscan.graphs import *",
+            "except (ImportError, ModuleNotFoundError):",
+            "    from holoscan.flow_graphs import *",
+            "",
+        ]
+    )
+    graphs_init.write_text(patched, encoding="utf-8")
+    return True
+
+
+def _relax_pipeline_generator_python_constraint(target_dir: Path) -> bool:
+    pyproject = target_dir / "pyproject.toml"
+    if not pyproject.exists():
+        return False
+
+    content = pyproject.read_text(encoding="utf-8")
+    patched = content.replace(
+        'requires-python = ">=3.10,<3.11"',
+        'requires-python = ">=3.10"',
+    )
+    if patched == content:
+        return False
+    pyproject.write_text(patched, encoding="utf-8")
+    return True
+
+
 def ensure_monai_deploy_pipeline_generator(
-    install_dir: str = "/local_disk0/pixels_monai_flow/tools/pipeline-generator",
+    install_dir: str = DEFAULT_PIPELINE_GENERATOR_DIR,
     repo_url: str = DEFAULT_PIPELINE_GENERATOR_REPO,
     branch: str = DEFAULT_PIPELINE_GENERATOR_BRANCH,
 ) -> str:
@@ -126,6 +181,7 @@ def ensure_monai_deploy_pipeline_generator(
                 shutil.rmtree(target_dir)
             shutil.copytree(source_dir, target_dir)
 
+    _relax_pipeline_generator_python_constraint(target_dir)
     _run_command([sys.executable, "-m", "pip", "install", "-e", str(target_dir)])
     pg = _pipeline_generator_executable()
     if not pg:
@@ -141,7 +197,7 @@ def generate_monai_deploy_app(
     output_dir: str,
     app_format: str = "dicom",
     force: bool = True,
-    pipeline_generator_dir: str = "/local_disk0/pixels_monai_flow/tools/pipeline-generator",
+    pipeline_generator_dir: str = DEFAULT_PIPELINE_GENERATOR_DIR,
     repo_url: str = DEFAULT_PIPELINE_GENERATOR_REPO,
     branch: str = DEFAULT_PIPELINE_GENERATOR_BRANCH,
 ) -> str:

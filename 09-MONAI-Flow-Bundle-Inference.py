@@ -19,7 +19,8 @@
 # COMMAND ----------
 
 # DBTITLE 1,Initialize Pixels environment
-import subprocess, sys, os
+import subprocess
+import sys
 
 # GPU serverless pre-installs: monai 1.5.2, monai-deploy-app-sdk 3.5.0,
 # holoscan-cu12 4.2.0, torch 2.7.1, mlflow 3.12.0, pydicom, highdicom,
@@ -29,28 +30,10 @@ subprocess.check_call(
      "pytorch-ignite>=0.4", "numpy-stl>=3.0", "trimesh"]
 )
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Fix: monai-deploy-app-sdk 3.5.0 ships monai/deploy/graphs/__init__.py that
-# does `from holoscan.graphs import *`, but holoscan 4.2.0 renamed the module
-# to holoscan.flow_graphs. Patch the file so the subprocess app.py can import
-# monai.deploy without crashing.
-# ──────────────────────────────────────────────────────────────────────────────
-import monai
+from dbx.pixels.modelserving.bundles import patch_monai_deploy_holoscan_compatibility
 
-graphs_init = os.path.join(os.path.dirname(monai.__file__), "deploy", "graphs", "__init__.py")
-if os.path.exists(graphs_init):
-    with open(graphs_init, "r") as f:
-        content = f.read()
-    if "holoscan.graphs" in content and "flow_graphs" not in content:
-        patched = (
-            "try:\n"
-            "    from holoscan.graphs import *\n"
-            "except (ImportError, ModuleNotFoundError):\n"
-            "    from holoscan.flow_graphs import *\n"
-        )
-        with open(graphs_init, "w") as f:
-            f.write(patched)
-        print(f"Patched {graphs_init} for holoscan 4.2+ compatibility")
+if patch_monai_deploy_holoscan_compatibility():
+    print("Patched MONAI Deploy for Holoscan 4 compatibility")
 
 dbutils.library.restartPython()
 
@@ -102,7 +85,7 @@ print(f"Output directory: {output_dir}")
 
 # COMMAND ----------
 
-# DBTITLE 1,Install MONAI deploy dependencies
+# DBTITLE 1,Validate MONAI deploy dependencies
 # Validate environment after restart
 import monai
 import monai.deploy.conditions  # should not raise with the holoscan patch
@@ -173,7 +156,6 @@ print(f"Experiment: {experiment_name}")
 
 # DBTITLE 1,Generate MONAI Deploy app in DICOM mode
 from dbx.pixels.modelserving.bundles import generate_monai_deploy_app
-import subprocess, sys, shutil
 
 # Skip generation if the app already exists (idempotent)
 app_py = deploy_app_dir / "app.py"
@@ -181,20 +163,7 @@ if app_py.exists():
     generated_app_dir = str(deploy_app_dir)
     print(f"DICOM deploy app already exists, skipping generation: {generated_app_dir}")
 else:
-    # The upstream pipeline-generator pyproject.toml pins requires-python <3.11,
-    # but GPU serverless runs Python 3.12. Pre-install with relaxed constraint.
     pg_dir = "/tmp/pixels_monai_flow/tools/pipeline-generator"
-    if not shutil.which("pg"):
-        toml_path = Path(pg_dir) / "pyproject.toml"
-        if toml_path.exists():
-            content = toml_path.read_text()
-            content = content.replace(
-                'requires-python = ">=3.10,<3.11"',
-                'requires-python = ">=3.10"',
-            )
-            toml_path.write_text(content)
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", pg_dir, "-q"])
-
     generated_app_dir = generate_monai_deploy_app(
         model_id=model_id,
         output_dir=str(deploy_app_dir),
@@ -237,12 +206,12 @@ print(f"Model URI: {model_uri}")
 # MAGIC ## Run DICOM inference from the UC Volume
 # MAGIC
 # MAGIC Load the logged MLflow pyfunc model directly and run prediction with a pandas
-# MAGIC DataFrame. This follows the same pattern as the `monai_flow_demo` notebook —
+# MAGIC DataFrame. This follows the same pattern as the `monai_flow_demo` notebook:
 # MAGIC no Spark overhead needed for single-image inference.
 
 # COMMAND ----------
 
-# DBTITLE 1,Run inference with Pixels transformer
+# DBTITLE 1,Run single-image inference
 import pandas as pd
 
 pyfunc_model = mlflow.pyfunc.load_model(model_uri)
@@ -250,24 +219,24 @@ pyfunc_model = mlflow.pyfunc.load_model(model_uri)
 input_df = pd.DataFrame({"image_path": [input_dicom_dir], "output_dir": [output_dir]})
 preds = pyfunc_model.predict(input_df)
 
-print(f"Output files: {preds['output_files']}")
-if preds.get('error'):
+print(f"Output files: {preds.get('output_files')}")
+if preds.get("error"):
     print(f"Error: {preds['error']}")
 
 # COMMAND ----------
 
 # DBTITLE 1,Verify DICOM outputs
-output_files = preds.get('output_files') or []
+output_files = preds.get("output_files") or []
 dicom_outputs = [
     path for path in output_files if path.lower().endswith((".dcm", ".seg.dcm"))
 ]
 
 if not dicom_outputs:
-    print(f"No DICOM output files found. All output files: {output_files}")
-else:
-    print("Verified DICOM output files:")
-    for path in dicom_outputs:
-        print(f"  {path}")
+    raise RuntimeError(f"No DICOM output files found. All output files: {output_files}")
+
+print("Verified DICOM output files:")
+for path in dicom_outputs:
+    print(f"  {path}")
 
 # COMMAND ----------
 
@@ -300,16 +269,16 @@ seg_ds = pydicom.dcmread(seg_file)
 seg_arr = seg_ds.pixel_array
 print(f"Segmentation array: {seg_arr.shape}, unique values: {np.unique(seg_arr)}")
 
-# ── Validate segmentation is non-zero ──
+# Validate segmentation is non-zero
 total_seg_voxels = np.count_nonzero(seg_arr)
 if total_seg_voxels == 0:
-    print("\n⚠️  WARNING: Segmentation is entirely zero — no structure was segmented.")
+    print("\nWARNING: Segmentation is entirely zero - no structure was segmented.")
     print("This may indicate the model did not detect the target organ in this scan.")
 else:
-    print(f"\n✓ Segmentation contains {total_seg_voxels:,} non-zero voxels")
+    print(f"\nSegmentation contains {total_seg_voxels:,} non-zero voxels")
 
-    # ── Find slices with segmentation ──
-    # seg_arr may be (num_seg_frames, H, W) — find per-frame nonzero counts
+    # Find slices with segmentation.
+    # seg_arr may be (num_seg_frames, H, W); find per-frame nonzero counts.
     if seg_arr.ndim == 3:
         seg_per_slice = np.array([np.count_nonzero(seg_arr[i]) for i in range(seg_arr.shape[0])])
     else:
@@ -319,11 +288,11 @@ else:
     print(f"  Segmentation present in {len(active_frames)}/{seg_arr.shape[0]} frames")
     print(f"  Frame range with segmentation: [{active_frames[0]}, {active_frames[-1]}]")
 
-    # ── Pick the middle frame that has segmentation ──
+    # Pick the middle frame that has segmentation.
     mid_frame_idx = active_frames[len(active_frames) // 2]
     mid_seg_slice = seg_arr[mid_frame_idx]
 
-    # ── Calculate area for the middle slice ──
+    # Calculate area for the middle slice.
     pixel_count = np.count_nonzero(mid_seg_slice)
     # Try to get pixel spacing for real-world area
     try:
@@ -331,12 +300,17 @@ else:
         pixel_area_mm2 = float(ps[0]) * float(ps[1])
         area_mm2 = pixel_count * pixel_area_mm2
         area_cm2 = area_mm2 / 100.0
+        area_label = f"area: {area_cm2:.2f} cm2"
         print(f"\n  Middle seg frame {mid_frame_idx}: {pixel_count:,} pixels")
-        print(f"  Cross-sectional area: {area_mm2:.1f} mm² ({area_cm2:.2f} cm²)")
+        print(f"  Cross-sectional area: {area_mm2:.1f} mm2 ({area_cm2:.2f} cm2)")
     except (AttributeError, IndexError):
-        print(f"\n  Middle seg frame {mid_frame_idx}: {pixel_count:,} pixels (no pixel spacing available)")
+        area_label = "area: unavailable"
+        print(
+            f"\n  Middle seg frame {mid_frame_idx}: {pixel_count:,} pixels "
+            "(no pixel spacing available)"
+        )
 
-    # ── Map seg frames to CT slices ──
+    # Map seg frames to CT slices.
     # DICOM SEG frames may reference source slices via ReferencedSOPInstanceUID
     # Simple approach: if seg has fewer slices, try to align via PerFrameFunctionalGroupsSequence
     ct_slice_for_seg = None
@@ -360,7 +334,7 @@ else:
     if ct_slice_for_seg is None:
         ct_slice_for_seg = dicom_pixel_arrays.shape[0] // 2
 
-    # ── Visualize ──
+    # Visualize.
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
     # Left: CT slice alone
@@ -377,9 +351,9 @@ else:
     axes[2].imshow(dicom_pixel_arrays[ct_slice_for_seg], cmap="gray")
     masked = np.ma.masked_where(mid_seg_slice == 0, mid_seg_slice)
     axes[2].imshow(masked, cmap="autumn", alpha=0.5)
-    axes[2].set_title(f"Overlay (area: {area_cm2:.2f} cm²)")
+    axes[2].set_title(f"Overlay ({area_label})")
     axes[2].axis("off")
 
-    plt.suptitle(f"{model_id} — Middle Segmentation Slice", fontsize=13)
+    plt.suptitle(f"{model_id} - Middle Segmentation Slice", fontsize=13)
     plt.tight_layout()
     plt.show()
