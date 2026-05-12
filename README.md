@@ -260,7 +260,7 @@ To deploy the MONAILabel server in a Model Serving endpoint we prepared [ModelSe
 
 ### DICOM MONAI Inference with MLflow
 
-For a DICOM-first smoke test without starting a MONAILabel server, run [09-MONAI-Flow-Bundle-Inference](09-MONAI-Flow-Bundle-Inference.py). The notebook generates a MONAI Deploy app from a public MONAI bundle, logs it as an MLflow pyfunc model, runs inference on a DICOM series directory from a Unity Catalog Volume, and writes DICOM outputs back to the Volume. MONAI-Flow and MONAI runtime dependencies are optional and installed at notebook runtime; model weights are downloaded during app generation and are not committed to this repository.
+For a DICOM-first smoke test without starting a MONAILabel server, run [09-MONAI-Flow-Bundle-Inference](09-MONAI-Flow-Bundle-Inference.py). The notebook uses the Pixels MONAI deploy helpers to generate a MONAI Deploy app from a public MONAI bundle, log it as an MLflow pyfunc model, run inference on a DICOM series directory from a Unity Catalog Volume, and write DICOM outputs back to the Volume. MONAI runtime dependencies are installed at notebook runtime; model weights are downloaded during app generation and are not committed to this repository.
 
 #### Auto Segmentation with Lakehouse App and Serving Endpoint
 
@@ -331,7 +331,7 @@ DICOM® is recognized by the International Organization for Standardization as t
 | DICOGNITO            | A library and command line tool for anonymizing DICOM files | MIT  | https://github.com/blairconrad/dicognito |
 | FF3                  | FPE - Format Preserving Encryption with FF3 in Python | Apache-2.0 license  | https://github.com/mysto/python-fpe |
 | Vista3D              | MONAI Versatile Imaging SegmenTation and Annotation model | Apache-2.0 license (code) - NCLS v1 (model weight) | https://github.com/Project-MONAI/VISTA/tree/main/vista3d |
-| MONAI                | Medical imaging AI framework used by optional MONAI-Flow bundle notebook | Apache-2.0 license | https://github.com/Project-MONAI/MONAI |
+| MONAI                | Medical imaging AI framework used by optional MONAI bundle notebook | Apache-2.0 license | https://github.com/Project-MONAI/MONAI |
 | MLflow               | Model logging and pyfunc inference for optional MONAI bundle workflow | Apache-2.0 license | https://github.com/mlflow/mlflow |
 | highdicom            | DICOM SEG support for optional MONAI bundle workflows | MIT | https://github.com/ImagingDataCommons/highdicom |
 | nibabel              | NIfTI image I/O for optional MONAI bundle workflows | MIT | https://github.com/nipy/nibabel |

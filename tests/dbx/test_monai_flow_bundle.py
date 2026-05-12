@@ -1,13 +1,13 @@
-import importlib
-
 import pandas as pd
 import pytest
 
 from dbx.pixels.modelserving.bundles.monai_flow import (
-    MissingMonaiFlowDependency,
+    MonaiDeployAppModel,
     MonaiFlowBundleTransformer,
     _build_prediction_payload,
+    _merge_requirements,
     _normalise_prediction_result,
+    log_monai_deploy_app,
     log_monai_flow_bundle,
 )
 
@@ -70,18 +70,46 @@ def test_normalise_prediction_result_from_dataframe():
     assert result["error"] == ""
 
 
-def test_log_monai_flow_bundle_reports_missing_optional_dependency(monkeypatch):
-    real_import_module = importlib.import_module
+def test_normalise_prediction_result_from_dicom_output():
+    result = _normalise_prediction_result(
+        {
+            "output_dir": "/Volumes/main/schema/vol/output",
+            "output_files": "/Volumes/main/schema/vol/output/seg.dcm",
+        }
+    )
 
-    def fake_import_module(name, package=None):
-        if name == "monai_flow":
-            raise ImportError("missing")
-        return real_import_module(name, package)
+    assert result["output_files"] == ["/Volumes/main/schema/vol/output/seg.dcm"]
+    assert result["error"] == ""
 
-    monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
-    with pytest.raises(MissingMonaiFlowDependency):
-        log_monai_flow_bundle(bundle_name="spleen_ct_segmentation")
+def test_merge_requirements_keeps_first_package_specifier():
+    requirements = _merge_requirements(
+        ["monai>=1.5", "pydicom>=2.3"],
+        ["monai==1.5.0", "highdicom"],
+    )
+
+    assert requirements == ["monai>=1.5", "pydicom>=2.3", "highdicom"]
+
+
+def test_deploy_app_model_normalizes_inputs():
+    model = MonaiDeployAppModel()
+
+    assert model._normalize_input("/Volumes/main/schema/vol/input") == {
+        "image_path": "/Volumes/main/schema/vol/input"
+    }
+    assert model._normalize_input([{"image_path": "a", "output_dir": "b"}]) == {
+        "image_path": "a",
+        "output_dir": "b",
+    }
+
+
+def test_log_monai_flow_bundle_validates_deploy_app_before_logging():
+    with pytest.raises(FileNotFoundError):
+        log_monai_flow_bundle(deploy_app_dir="/missing/deploy/app")
+
+
+def test_log_monai_deploy_app_aliases_legacy_helper():
+    assert log_monai_deploy_app is log_monai_flow_bundle
 
 
 def test_transformer_stores_configuration():
