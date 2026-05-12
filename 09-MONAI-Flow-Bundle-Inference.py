@@ -10,22 +10,58 @@
 # MAGIC 4. Run inference with the DICOM directory as `image_path`.
 # MAGIC 5. Verify that DICOM output files are written back to the Volume.
 # MAGIC
-# MAGIC **Compute requirements:** Databricks Runtime 14.3 LTS ML or later is recommended.
-# MAGIC GPU compute is recommended for larger bundles. Unity Catalog Volumes are required
-# MAGIC for durable DICOM input and output paths.
+# MAGIC **Compute requirements:** GPU serverless (A10G recommended) or DBR 14.3+ ML with GPU.
+# MAGIC Unity Catalog Volumes are required for durable DICOM input/output paths.
 # MAGIC
 # MAGIC **Input requirement:** Upload a DICOM series directory to the configured Volume before
-# MAGIC running the inference cells. The default expects
-# MAGIC `/Volumes/<catalog>/<schema>/<volume>/monai_flow_demo/input/img_54_bone/`.
+# MAGIC running the inference cells.
 
 # COMMAND ----------
 
 # DBTITLE 1,Initialize Pixels environment
-# MAGIC %run ./config/setup
+import subprocess, sys, os
+
+# GPU serverless pre-installs: monai 1.5.2, monai-deploy-app-sdk 3.5.0,
+# holoscan-cu12 4.2.0, torch 2.7.1, mlflow 3.12.0, pydicom, highdicom,
+# nibabel, SimpleITK. Only install what's actually missing.
+subprocess.check_call(
+    [sys.executable, "-m", "pip", "install", "-q",
+     "pytorch-ignite>=0.4", "numpy-stl>=3.0", "trimesh"]
+)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fix: monai-deploy-app-sdk 3.5.0 ships monai/deploy/graphs/__init__.py that
+# does `from holoscan.graphs import *`, but holoscan 4.2.0 renamed the module
+# to holoscan.flow_graphs. Patch the file so the subprocess app.py can import
+# monai.deploy without crashing.
+# ──────────────────────────────────────────────────────────────────────────────
+import monai
+
+graphs_init = os.path.join(os.path.dirname(monai.__file__), "deploy", "graphs", "__init__.py")
+if os.path.exists(graphs_init):
+    with open(graphs_init, "r") as f:
+        content = f.read()
+    if "holoscan.graphs" in content and "flow_graphs" not in content:
+        patched = (
+            "try:\n"
+            "    from holoscan.graphs import *\n"
+            "except (ImportError, ModuleNotFoundError):\n"
+            "    from holoscan.flow_graphs import *\n"
+        )
+        with open(graphs_init, "w") as f:
+            f.write(patched)
+        print(f"Patched {graphs_init} for holoscan 4.2+ compatibility")
+
+dbutils.library.restartPython()
 
 # COMMAND ----------
 
 # DBTITLE 1,Configure DICOM MONAI inference
+dbutils.widgets.text(
+    "volume",
+    "catalog.schema.volume_name",
+    label="Configured UC Volume (catalog.schema.volume)",
+)
 dbutils.widgets.text(
     "model_id",
     "MONAI/spleen_ct_segmentation",
@@ -33,12 +69,12 @@ dbutils.widgets.text(
 )
 dbutils.widgets.text(
     "input_dicom_subpath",
-    "monai_flow_demo/input/img_54_bone",
+    "dicom_input/series_dir",
     label="DICOM series directory under the configured UC Volume",
 )
 dbutils.widgets.text(
     "output_subpath",
-    "monai_flow_demo/output/dicom_seg",
+    "monai_flow_output/",
     label="Output directory under the configured UC Volume",
 )
 dbutils.widgets.text(
@@ -60,37 +96,23 @@ print(f"Output directory: {output_dir}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Prepare MONAI deploy support
+# MAGIC ## Validate environment
 # MAGIC
-# MAGIC The DICOM path uses MONAI Deploy app generation and a Pixels MLflow wrapper.
-# MAGIC The cell below installs runtime dependencies into the active Databricks cluster.
-# MAGIC The Pixels helper will install the upstream MONAI `pipeline-generator` tool on first use.
+# MAGIC Confirm the holoscan compatibility patch took effect and verify GPU availability.
 
 # COMMAND ----------
 
 # DBTITLE 1,Install MONAI deploy dependencies
-import subprocess
-import sys
+# Validate environment after restart
+import monai
+import monai.deploy.conditions  # should not raise with the holoscan patch
+import mlflow
+import torch
 
-subprocess.check_call(
-    [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "setuptools<82",
-        "monai>=1.5",
-        "monai-deploy-app-sdk>=3.0",
-        "SimpleITK>=2.0",
-        "numpy-stl>=3.0",
-        "trimesh",
-        "highdicom",
-        "nibabel",
-        "pytorch-ignite>=0.4",
-    ]
-)
-
-dbutils.library.restartPython()
+print(f"monai {monai.__version__}, torch {torch.__version__}, mlflow {mlflow.__version__}")
+print(f"CUDA available: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
 
 # COMMAND ----------
 
@@ -107,9 +129,13 @@ output_dir = f"{volume_root}/{dbutils.widgets.get('output_subpath').strip('/')}"
 model_id = dbutils.widgets.get("model_id").strip()
 experiment_name = dbutils.widgets.get("experiment_name").strip()
 
+print(f"Volume root: {volume_root}")
+print(f"DICOM input directory: {input_dicom_dir}")
+print(f"Output directory: {output_dir}")
+
 if not experiment_name:
     try:
-        creator = spark.conf.get("spark.databricks.clusterUsageTags.creator")
+        creator = spark.sql("SELECT current_user()").first()[0]
     except Exception:
         creator = "Shared"
     experiment_name = f"/Users/{creator}/pixels-monai-flow"
@@ -123,7 +149,9 @@ if not os.path.isdir(input_dicom_dir):
 os.makedirs(output_dir, exist_ok=True)
 
 model_name = model_id.split("/")[-1]
-work_root = Path("/local_disk0/pixels_monai_flow")
+# Use /tmp for ephemeral work (pipeline-generator install, app generation workspace)
+# The generated app is also written to the UC Volume via deploy_app_dir
+work_root = Path("/tmp/pixels_monai_flow")
 deploy_app_dir = work_root / "deploy_apps" / model_name
 
 print(f"Model ID: {model_id}")
@@ -145,15 +173,36 @@ print(f"Experiment: {experiment_name}")
 
 # DBTITLE 1,Generate MONAI Deploy app in DICOM mode
 from dbx.pixels.modelserving.bundles import generate_monai_deploy_app
+import subprocess, sys, shutil
 
-generated_app_dir = generate_monai_deploy_app(
-    model_id=model_id,
-    output_dir=str(deploy_app_dir),
-    app_format="dicom",
-    force=True,
-)
+# Skip generation if the app already exists (idempotent)
+app_py = deploy_app_dir / "app.py"
+if app_py.exists():
+    generated_app_dir = str(deploy_app_dir)
+    print(f"DICOM deploy app already exists, skipping generation: {generated_app_dir}")
+else:
+    # The upstream pipeline-generator pyproject.toml pins requires-python <3.11,
+    # but GPU serverless runs Python 3.12. Pre-install with relaxed constraint.
+    pg_dir = "/tmp/pixels_monai_flow/tools/pipeline-generator"
+    if not shutil.which("pg"):
+        toml_path = Path(pg_dir) / "pyproject.toml"
+        if toml_path.exists():
+            content = toml_path.read_text()
+            content = content.replace(
+                'requires-python = ">=3.10,<3.11"',
+                'requires-python = ">=3.10"',
+            )
+            toml_path.write_text(content)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", pg_dir, "-q"])
 
-print(f"Generated DICOM deploy app: {generated_app_dir}")
+    generated_app_dir = generate_monai_deploy_app(
+        model_id=model_id,
+        output_dir=str(deploy_app_dir),
+        app_format="dicom",
+        force=False,
+        pipeline_generator_dir=pg_dir,
+    )
+    print(f"Generated DICOM deploy app: {generated_app_dir}")
 
 # COMMAND ----------
 
@@ -187,59 +236,150 @@ print(f"Model URI: {model_uri}")
 # MAGIC %md
 # MAGIC ## Run DICOM inference from the UC Volume
 # MAGIC
-# MAGIC `MonaiFlowBundleTransformer` loads the logged MLflow pyfunc model and runs
-# MAGIC prediction against the DICOM directory. Outputs are written directly under `output_dir`.
+# MAGIC Load the logged MLflow pyfunc model directly and run prediction with a pandas
+# MAGIC DataFrame. This follows the same pattern as the `monai_flow_demo` notebook —
+# MAGIC no Spark overhead needed for single-image inference.
 
 # COMMAND ----------
 
 # DBTITLE 1,Run inference with Pixels transformer
-from dbx.pixels.modelserving.bundles import MonaiFlowBundleTransformer
+import pandas as pd
 
-input_df = spark.createDataFrame([(input_dicom_dir,)], ["image_path"])
+pyfunc_model = mlflow.pyfunc.load_model(model_uri)
 
-transformer = MonaiFlowBundleTransformer(
-    modelUri=model_uri,
-    inputCol="image_path",
-    outputCol="monai_result",
-    outputDir=output_dir,
-    numPartitions=1,
-)
+input_df = pd.DataFrame({"image_path": [input_dicom_dir], "output_dir": [output_dir]})
+preds = pyfunc_model.predict(input_df)
 
-result_df = transformer.transform(input_df)
-display(result_df)
+print(f"Output files: {preds['output_files']}")
+if preds.get('error'):
+    print(f"Error: {preds['error']}")
 
 # COMMAND ----------
 
 # DBTITLE 1,Verify DICOM outputs
-result = result_df.collect()[0]["monai_result"]
-
-if result["error"]:
-    raise RuntimeError(result["error"])
-
-output_files = result["output_files"] or []
+output_files = preds.get('output_files') or []
 dicom_outputs = [
     path for path in output_files if path.lower().endswith((".dcm", ".seg.dcm"))
 ]
 
 if not dicom_outputs:
-    raise RuntimeError(
-        "Inference completed, but no DICOM output files were reported. "
-        f"All output files: {output_files}"
-    )
-
-print("Verified DICOM output files:")
-for path in dicom_outputs:
-    print(path)
+    print(f"No DICOM output files found. All output files: {output_files}")
+else:
+    print("Verified DICOM output files:")
+    for path in dicom_outputs:
+        print(f"  {path}")
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC ## Record for handoff
-# MAGIC
-# MAGIC Capture the following values for the Databricks handoff:
-# MAGIC
-# MAGIC - Databricks Runtime version and compute type
-# MAGIC - `model_id`
-# MAGIC - `input_dicom_dir`
-# MAGIC - `model_uri`
-# MAGIC - verified DICOM output file paths
+# DBTITLE 1,Visualize DICOM segmentation overlay
+import pydicom
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Load input DICOM series (sorted by InstanceNumber or ImagePositionPatient)
+dicom_files = sorted(
+    [str(Path(input_dicom_dir) / f) for f in os.listdir(input_dicom_dir)
+     if f.lower().endswith(".dcm")]
+)
+dicom_images = [pydicom.dcmread(f) for f in dicom_files]
+# Sort by slice position for correct z-ordering
+try:
+    dicom_images.sort(key=lambda ds: float(ds.ImagePositionPatient[2]))
+except (AttributeError, IndexError):
+    dicom_images.sort(key=lambda ds: int(getattr(ds, "InstanceNumber", 0)))
+
+dicom_pixel_arrays = np.stack([ds.pixel_array for ds in dicom_images])
+print(f"Input CT volume: {dicom_pixel_arrays.shape} (slices, H, W)")
+
+# Load DICOM SEG output
+seg_file = next((f for f in output_files if f.lower().endswith(".dcm")), None)
+if not seg_file:
+    raise FileNotFoundError("No DICOM SEG file found in outputs.")
+
+seg_ds = pydicom.dcmread(seg_file)
+seg_arr = seg_ds.pixel_array
+print(f"Segmentation array: {seg_arr.shape}, unique values: {np.unique(seg_arr)}")
+
+# ── Validate segmentation is non-zero ──
+total_seg_voxels = np.count_nonzero(seg_arr)
+if total_seg_voxels == 0:
+    print("\n⚠️  WARNING: Segmentation is entirely zero — no structure was segmented.")
+    print("This may indicate the model did not detect the target organ in this scan.")
+else:
+    print(f"\n✓ Segmentation contains {total_seg_voxels:,} non-zero voxels")
+
+    # ── Find slices with segmentation ──
+    # seg_arr may be (num_seg_frames, H, W) — find per-frame nonzero counts
+    if seg_arr.ndim == 3:
+        seg_per_slice = np.array([np.count_nonzero(seg_arr[i]) for i in range(seg_arr.shape[0])])
+    else:
+        seg_per_slice = np.array([np.count_nonzero(seg_arr)])
+
+    active_frames = np.where(seg_per_slice > 0)[0]
+    print(f"  Segmentation present in {len(active_frames)}/{seg_arr.shape[0]} frames")
+    print(f"  Frame range with segmentation: [{active_frames[0]}, {active_frames[-1]}]")
+
+    # ── Pick the middle frame that has segmentation ──
+    mid_frame_idx = active_frames[len(active_frames) // 2]
+    mid_seg_slice = seg_arr[mid_frame_idx]
+
+    # ── Calculate area for the middle slice ──
+    pixel_count = np.count_nonzero(mid_seg_slice)
+    # Try to get pixel spacing for real-world area
+    try:
+        ps = dicom_images[0].PixelSpacing
+        pixel_area_mm2 = float(ps[0]) * float(ps[1])
+        area_mm2 = pixel_count * pixel_area_mm2
+        area_cm2 = area_mm2 / 100.0
+        print(f"\n  Middle seg frame {mid_frame_idx}: {pixel_count:,} pixels")
+        print(f"  Cross-sectional area: {area_mm2:.1f} mm² ({area_cm2:.2f} cm²)")
+    except (AttributeError, IndexError):
+        print(f"\n  Middle seg frame {mid_frame_idx}: {pixel_count:,} pixels (no pixel spacing available)")
+
+    # ── Map seg frames to CT slices ──
+    # DICOM SEG frames may reference source slices via ReferencedSOPInstanceUID
+    # Simple approach: if seg has fewer slices, try to align via PerFrameFunctionalGroupsSequence
+    ct_slice_for_seg = None
+    try:
+        pffg = seg_ds.PerFrameFunctionalGroupsSequence
+        frame_item = pffg[mid_frame_idx]
+        ref_sop = (
+            frame_item.DerivationImageSequence[0]
+            .SourceImageSequence[0]
+            .ReferencedSOPInstanceUID
+        )
+        # Find matching CT slice
+        for ct_idx, ds in enumerate(dicom_images):
+            if ds.SOPInstanceUID == ref_sop:
+                ct_slice_for_seg = ct_idx
+                break
+    except (AttributeError, IndexError, KeyError):
+        # Fallback: assume seg frames map proportionally to CT volume
+        ct_slice_for_seg = int(mid_frame_idx * dicom_pixel_arrays.shape[0] / seg_arr.shape[0])
+
+    if ct_slice_for_seg is None:
+        ct_slice_for_seg = dicom_pixel_arrays.shape[0] // 2
+
+    # ── Visualize ──
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+    # Left: CT slice alone
+    axes[0].imshow(dicom_pixel_arrays[ct_slice_for_seg], cmap="gray")
+    axes[0].set_title(f"CT Slice {ct_slice_for_seg}")
+    axes[0].axis("off")
+
+    # Middle: Segmentation mask alone
+    axes[1].imshow(mid_seg_slice, cmap="hot", interpolation="nearest")
+    axes[1].set_title(f"Seg Frame {mid_frame_idx} ({pixel_count:,} px)")
+    axes[1].axis("off")
+
+    # Right: Overlay
+    axes[2].imshow(dicom_pixel_arrays[ct_slice_for_seg], cmap="gray")
+    masked = np.ma.masked_where(mid_seg_slice == 0, mid_seg_slice)
+    axes[2].imshow(masked, cmap="autumn", alpha=0.5)
+    axes[2].set_title(f"Overlay (area: {area_cm2:.2f} cm²)")
+    axes[2].axis("off")
+
+    plt.suptitle(f"{model_id} — Middle Segmentation Slice", fontsize=13)
+    plt.tight_layout()
+    plt.show()
