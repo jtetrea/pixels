@@ -36,7 +36,8 @@ DEFAULT_PIPELINE_GENERATOR_DIR = "/tmp/pixels_monai_flow/tools/pipeline-generato
 DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "setuptools<82",
     "monai>=1.5",
-    "monai-deploy-app-sdk>=3.0",
+    "monai-deploy-app-sdk==3.5.0",
+    "holoscan-cu12==4.0.0",
     "pydicom>=2.3",
     "highdicom",
     "nibabel",
@@ -82,44 +83,6 @@ def _pipeline_generator_executable() -> Optional[str]:
         return str(candidate)
 
     return None
-
-
-def patch_monai_deploy_holoscan_compatibility(monai_package_dir: Optional[str] = None) -> bool:
-    """Patch MONAI Deploy imports for Holoscan releases that renamed graphs.
-
-    GPU serverless environments may pair monai-deploy-app-sdk 3.5 with
-    holoscan 4.x. In that combination, MONAI Deploy imports holoscan.graphs,
-    while Holoscan exposes the module as holoscan.flow_graphs.
-    """
-
-    if monai_package_dir is None:
-        try:
-            import monai
-        except ImportError as e:
-            raise MissingMonaiRuntimeDependency(
-                "MONAI is required before applying the Holoscan compatibility patch."
-            ) from e
-        monai_package_dir = os.path.dirname(monai.__file__)
-
-    graphs_init = Path(monai_package_dir) / "deploy" / "graphs" / "__init__.py"
-    if not graphs_init.exists():
-        return False
-
-    content = graphs_init.read_text(encoding="utf-8")
-    if "holoscan.graphs" not in content or "holoscan.flow_graphs" in content:
-        return False
-
-    patched = "\n".join(
-        [
-            "try:",
-            "    from holoscan.graphs import *",
-            "except (ImportError, ModuleNotFoundError):",
-            "    from holoscan.flow_graphs import *",
-            "",
-        ]
-    )
-    graphs_init.write_text(patched, encoding="utf-8")
-    return True
 
 
 def _relax_pipeline_generator_python_constraint(target_dir: Path) -> bool:

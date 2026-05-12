@@ -22,18 +22,23 @@
 import subprocess
 import sys
 
-# GPU serverless pre-installs: monai 1.5.2, monai-deploy-app-sdk 3.5.0,
-# holoscan-cu12 4.2.0, torch 2.7.1, mlflow 3.12.0, pydicom, highdicom,
-# nibabel, SimpleITK. Only install what's actually missing.
+# GPU serverless may preinstall a newer MONAI Deploy / Holoscan pair.
+# Keep MONAI Deploy current and pin the latest Holoscan wheel that still exposes
+# holoscan.graphs, which MONAI Deploy 3.5 imports.
 subprocess.check_call(
-    [sys.executable, "-m", "pip", "install", "-q",
-     "pytorch-ignite>=0.4", "numpy-stl>=3.0", "trimesh"]
+    [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "-q",
+        "monai-deploy-app-sdk==3.5.0",
+        "holoscan-cu12==4.0.0",
+        "pytorch-ignite>=0.4",
+        "numpy-stl>=3.0",
+        "trimesh",
+    ]
 )
-
-from dbx.pixels.modelserving.bundles import patch_monai_deploy_holoscan_compatibility
-
-if patch_monai_deploy_holoscan_compatibility():
-    print("Patched MONAI Deploy for Holoscan 4 compatibility")
 
 dbutils.library.restartPython()
 
@@ -81,18 +86,26 @@ print(f"Output directory: {output_dir}")
 # MAGIC %md
 # MAGIC ## Validate environment
 # MAGIC
-# MAGIC Confirm the holoscan compatibility patch took effect and verify GPU availability.
+# MAGIC Confirm the MONAI Deploy / Holoscan versions and verify GPU availability.
 
 # COMMAND ----------
 
 # DBTITLE 1,Validate MONAI deploy dependencies
 # Validate environment after restart
 import monai
-import monai.deploy.conditions  # should not raise with the holoscan patch
+import monai.deploy.conditions
+import holoscan
+import importlib.metadata as metadata
 import mlflow
 import torch
 
-print(f"monai {monai.__version__}, torch {torch.__version__}, mlflow {mlflow.__version__}")
+print(
+    f"monai {monai.__version__}, "
+    f"monai-deploy {metadata.version('monai-deploy-app-sdk')}, "
+    f"holoscan-cu12 {metadata.version('holoscan-cu12')}, "
+    f"holoscan {holoscan.__version__}, torch {torch.__version__}, "
+    f"mlflow {mlflow.__version__}"
+)
 print(f"CUDA available: {torch.cuda.is_available()}")
 if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name(0)}")
