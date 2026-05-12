@@ -258,9 +258,9 @@ To deploy the MONAILabel server in a Model Serving endpoint we prepared [ModelSe
 - **Unity Catalog Integration**: Adds the model to the Unity Catalog for organized management.
 - **Serving Endpoint Deployment**: Deploys the model in a serving endpoint for real-time inference.
 
-### MONAI Bundle Inference with MLflow
+### DICOM MONAI Inference with MLflow
 
-For a lighter-weight bundle smoke test without starting a MONAILabel server, run [09-MONAI-Flow-Bundle-Inference](09-MONAI-Flow-Bundle-Inference.py). The notebook logs a MONAI bundle as an MLflow pyfunc model, runs inference from a Unity Catalog Volume path, and writes outputs back to the Volume. MONAI-Flow and MONAI runtime dependencies are optional and installed at notebook runtime; model weights are downloaded to the configured Volume and are not committed to this repository.
+For a DICOM-first smoke test without starting a MONAILabel server, run [09-MONAI-Flow-Bundle-Inference](09-MONAI-Flow-Bundle-Inference.py). The notebook generates a MONAI Deploy app from a public MONAI bundle, logs it as an MLflow pyfunc model, runs inference on a DICOM series directory from a Unity Catalog Volume, and writes DICOM outputs back to the Volume. MONAI-Flow and MONAI runtime dependencies are optional and installed at notebook runtime; model weights are downloaded during app generation and are not committed to this repository.
 
 #### Auto Segmentation with Lakehouse App and Serving Endpoint
 
@@ -335,4 +335,3 @@ DICOM® is recognized by the International Organization for Standardization as t
 | MLflow               | Model logging and pyfunc inference for optional MONAI bundle workflow | Apache-2.0 license | https://github.com/mlflow/mlflow |
 | highdicom            | DICOM SEG support for optional MONAI bundle workflows | MIT | https://github.com/ImagingDataCommons/highdicom |
 | nibabel              | NIfTI image I/O for optional MONAI bundle workflows | MIT | https://github.com/nipy/nibabel |
-

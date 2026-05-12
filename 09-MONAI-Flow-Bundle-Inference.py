@@ -1,18 +1,18 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # MONAI Bundle Inference with Pixels and MLflow
+# MAGIC # DICOM MONAI Inference with Pixels and MLflow
 # MAGIC
-# MAGIC This notebook demonstrates a minimal MONAI bundle inference workflow using Pixels, Unity Catalog Volumes, and MLflow.
+# MAGIC This notebook validates the DICOM workflow from the MONAI-Flow integration:
 # MAGIC
-# MAGIC **What this notebook does**
+# MAGIC 1. Read a DICOM series directory from a Unity Catalog Volume.
+# MAGIC 2. Generate a MONAI Deploy app in DICOM mode from a public MONAI bundle.
+# MAGIC 3. Log that generated app as an MLflow pyfunc model.
+# MAGIC 4. Run inference with the DICOM directory as `image_path`.
+# MAGIC 5. Verify that DICOM output files are written back to the Volume.
 # MAGIC
-# MAGIC 1. Uses the standard Pixels setup widgets for catalog, schema, table, and volume configuration.
-# MAGIC 2. Installs the optional `monai-flow` package from a workspace path when needed.
-# MAGIC 3. Logs a MONAI bundle as an MLflow pyfunc model.
-# MAGIC 4. Runs inference against an input image stored in a Unity Catalog Volume.
-# MAGIC 5. Writes model outputs back to the same governed Volume.
+# MAGIC **Compute requirements:** Databricks Runtime 14.3 LTS ML or later is recommended. GPU compute is recommended for larger bundles. Unity Catalog Volumes are required for durable DICOM input and output paths.
 # MAGIC
-# MAGIC **Compute requirements:** Databricks Runtime 14.3 LTS ML or later is recommended. A GPU cluster is recommended for larger bundles; the default spleen CT bundle is suitable for smoke testing.
+# MAGIC **Input requirement:** Upload a DICOM series directory to the configured Volume before running the inference cells. The default expects `/Volumes/<catalog>/<schema>/<volume>/monai_flow_demo/input/img_54_bone/`.
 
 # COMMAND ----------
 
@@ -21,31 +21,26 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Configure MONAI bundle inference
+# DBTITLE 1,Configure DICOM MONAI inference
 dbutils.widgets.text(
     "monai_flow_repo_path",
     "",
-    label="Optional workspace path to monai-flow repo, e.g. /Workspace/Users/<you>/monai-flow",
+    label="Workspace path to monai-flow repo, e.g. /Workspace/Users/<you>/monai-flow",
 )
 dbutils.widgets.text(
-    "bundle_name",
-    "spleen_ct_segmentation",
-    label="MONAI bundle name",
+    "model_id",
+    "MONAI/spleen_ct_segmentation",
+    label="Public MONAI model ID for app generation",
 )
 dbutils.widgets.text(
-    "input_subpath",
-    "monai_flow_demo/input/spleen_10.nii.gz",
-    label="Input path under the configured UC Volume",
+    "input_dicom_subpath",
+    "monai_flow_demo/input/img_54_bone",
+    label="DICOM series directory under the configured UC Volume",
 )
 dbutils.widgets.text(
     "output_subpath",
-    "monai_flow_demo/output/spleen_ct_segmentation",
+    "monai_flow_demo/output/dicom_seg",
     label="Output directory under the configured UC Volume",
-)
-dbutils.widgets.text(
-    "bundle_subpath",
-    "monai_flow_demo/bundles",
-    label="Bundle download directory under the configured UC Volume",
 )
 dbutils.widgets.text(
     "experiment_name",
@@ -56,56 +51,68 @@ dbutils.widgets.text(
 volume_name = dbutils.widgets.get("volume")
 volume_root = "/Volumes/" + volume_name.replace(".", "/")
 
-input_path = f"{volume_root}/{dbutils.widgets.get('input_subpath').strip('/')}"
+input_dicom_dir = f"{volume_root}/{dbutils.widgets.get('input_dicom_subpath').strip('/')}"
 output_dir = f"{volume_root}/{dbutils.widgets.get('output_subpath').strip('/')}"
-bundle_download_dir = f"{volume_root}/{dbutils.widgets.get('bundle_subpath').strip('/')}"
 
 print(f"Volume root: {volume_root}")
-print(f"Input path: {input_path}")
+print(f"DICOM input directory: {input_dicom_dir}")
 print(f"Output directory: {output_dir}")
-print(f"Bundle download directory: {bundle_download_dir}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Install optional MONAI-Flow dependency
+# MAGIC ## Prepare MONAI-Flow with deploy support
 # MAGIC
-# MAGIC Pixels keeps MONAI-Flow optional so the base accelerator remains lightweight. If `monai-flow` is already installed on the cluster, leave `monai_flow_repo_path` blank. If you cloned the MONAI-Flow repository into the workspace, provide its workspace path in the widget above.
+# MAGIC This DICOM path uses MONAI-Flow's MONAI Deploy app support. Provide a workspace clone of the MONAI-Flow repository in `monai_flow_repo_path`; the cell below downloads the upstream `pipeline-generator` helper and installs MONAI-Flow with its `deploy` extra.
 
 # COMMAND ----------
 
-# DBTITLE 1,Install monai-flow when a workspace repo path is provided
-import importlib.util
+# DBTITLE 1,Install MONAI-Flow deploy dependencies
+import os
 import subprocess
 import sys
+from pathlib import Path
 
 monai_flow_repo_path = dbutils.widgets.get("monai_flow_repo_path").strip()
+if not monai_flow_repo_path:
+    raise ValueError(
+        "Set the monai_flow_repo_path widget to a workspace clone of the "
+        "MONAI-Flow repository before running this DICOM workflow."
+    )
 
-if monai_flow_repo_path:
-    subprocess.check_call(
-        [sys.executable, "-m", "pip", "install", "-e", monai_flow_repo_path]
+repo_path = Path(monai_flow_repo_path)
+if not repo_path.exists():
+    raise FileNotFoundError(f"MONAI-Flow repo path not found: {repo_path}")
+
+setup_pipeline_generator = repo_path / "scripts" / "setup_pipeline_generator.sh"
+if not setup_pipeline_generator.exists():
+    raise FileNotFoundError(
+        f"Expected MONAI-Flow setup script not found: {setup_pipeline_generator}"
     )
-elif importlib.util.find_spec("monai_flow") is None:
-    raise ImportError(
-        "monai_flow is not installed. Set the monai_flow_repo_path widget to a "
-        "workspace clone of the MONAI-Flow repository, then rerun this cell."
-    )
-else:
-    print("monai_flow is already available on this cluster.")
+
+subprocess.check_call([str(setup_pipeline_generator)])
+subprocess.check_call(
+    [sys.executable, "-m", "pip", "install", "-e", f"{repo_path}[deploy]"]
+)
 
 dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# DBTITLE 1,Restore widget values after restart
+# DBTITLE 1,Restore configuration after restart
 import os
+import shutil
+import subprocess
+from pathlib import Path
+
+import mlflow
 
 volume_name = dbutils.widgets.get("volume")
 volume_root = "/Volumes/" + volume_name.replace(".", "/")
-bundle_name = dbutils.widgets.get("bundle_name")
-input_path = f"{volume_root}/{dbutils.widgets.get('input_subpath').strip('/')}"
+input_dicom_dir = f"{volume_root}/{dbutils.widgets.get('input_dicom_subpath').strip('/')}"
 output_dir = f"{volume_root}/{dbutils.widgets.get('output_subpath').strip('/')}"
-bundle_download_dir = f"{volume_root}/{dbutils.widgets.get('bundle_subpath').strip('/')}"
+model_id = dbutils.widgets.get("model_id").strip()
+monai_flow_repo_path = dbutils.widgets.get("monai_flow_repo_path").strip()
 experiment_name = dbutils.widgets.get("experiment_name").strip()
 
 if not experiment_name:
@@ -115,42 +122,75 @@ if not experiment_name:
         creator = "Shared"
     experiment_name = f"/Users/{creator}/pixels-monai-flow"
 
-os.makedirs(output_dir, exist_ok=True)
-os.makedirs(bundle_download_dir, exist_ok=True)
-
-if not os.path.exists(input_path):
+if not os.path.isdir(input_dicom_dir):
     raise FileNotFoundError(
-        f"Input file not found: {input_path}. Upload a sample image to the UC "
-        "Volume path or adjust the input_subpath widget."
+        f"DICOM input directory not found: {input_dicom_dir}. Upload a DICOM "
+        "series directory to this UC Volume path or adjust input_dicom_subpath."
     )
 
-print(f"Bundle: {bundle_name}")
+os.makedirs(output_dir, exist_ok=True)
+
+model_name = model_id.split("/")[-1]
+work_root = Path("/local_disk0/pixels_monai_flow")
+deploy_app_dir = work_root / "deploy_apps" / model_name
+
+print(f"Model ID: {model_id}")
+print(f"DICOM input directory: {input_dicom_dir}")
+print(f"Output directory: {output_dir}")
+print(f"Deploy app directory: {deploy_app_dir}")
 print(f"Experiment: {experiment_name}")
-print(f"Input: {input_path}")
-print(f"Output: {output_dir}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Log the MONAI bundle to MLflow
+# MAGIC ## Download and generate the DICOM deploy app
 # MAGIC
-# MAGIC The bundle weights are downloaded at runtime into the configured Unity Catalog Volume. They are not stored in the Pixels repository.
+# MAGIC `pg gen` downloads the public MONAI bundle and generates a MONAI Deploy app. The `--format dicom` option makes the generated app accept a DICOM series directory and write DICOM outputs.
 
 # COMMAND ----------
 
-# DBTITLE 1,Log bundle
-import mlflow
+# DBTITLE 1,Generate MONAI Deploy app in DICOM mode
+if deploy_app_dir.exists():
+    shutil.rmtree(deploy_app_dir)
 
+deploy_app_dir.parent.mkdir(parents=True, exist_ok=True)
+subprocess.check_call(
+    [
+        "pg",
+        "gen",
+        model_id,
+        "--format",
+        "dicom",
+        "--output",
+        str(deploy_app_dir),
+        "-f",
+    ]
+)
+
+assert (deploy_app_dir / "app.py").exists(), f"Generated app.py not found in {deploy_app_dir}"
+print(f"Generated DICOM deploy app: {deploy_app_dir}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Log the generated DICOM app to MLflow
+# MAGIC
+# MAGIC The logged MLflow model stores the generated app as an artifact. Prediction accepts:
+# MAGIC
+# MAGIC - `image_path`: DICOM series directory
+# MAGIC - `output_dir`: durable Volume path for generated outputs
+
+# COMMAND ----------
+
+# DBTITLE 1,Log generated app
 from dbx.pixels.modelserving.bundles import log_monai_flow_bundle
 
 mlflow.set_tracking_uri("databricks")
 mlflow.set_experiment(experiment_name)
 
 run_id, model_uri = log_monai_flow_bundle(
-    bundle_name=bundle_name,
-    download=True,
-    bundle_download_dir=bundle_download_dir,
-    input_example_path=input_path,
+    deploy_app_dir=str(deploy_app_dir),
+    input_example_path=input_dicom_dir,
     verbose=True,
 )
 
@@ -160,16 +200,16 @@ print(f"Model URI: {model_uri}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Run inference with the Pixels transformer
+# MAGIC ## Run DICOM inference from the UC Volume
 # MAGIC
-# MAGIC `MonaiFlowBundleTransformer` applies a logged MONAI-Flow MLflow model to paths in a Spark DataFrame. For this smoke test, the DataFrame contains one input image.
+# MAGIC `MonaiFlowBundleTransformer` loads the logged MLflow pyfunc model and runs prediction against the DICOM directory. Outputs are written directly under `output_dir`.
 
 # COMMAND ----------
 
-# DBTITLE 1,Run inference
+# DBTITLE 1,Run inference with Pixels transformer
 from dbx.pixels.modelserving.bundles import MonaiFlowBundleTransformer
 
-input_df = spark.createDataFrame([(input_path,)], ["image_path"])
+input_df = spark.createDataFrame([(input_dicom_dir,)], ["image_path"])
 
 transformer = MonaiFlowBundleTransformer(
     modelUri=model_uri,
@@ -184,25 +224,36 @@ display(result_df)
 
 # COMMAND ----------
 
-# DBTITLE 1,Verify persisted outputs
+# DBTITLE 1,Verify DICOM outputs
 result = result_df.collect()[0]["monai_result"]
 
 if result["error"]:
     raise RuntimeError(result["error"])
 
-if not result["output_files"]:
-    raise RuntimeError("Inference completed without output files.")
+output_files = result["output_files"] or []
+dicom_outputs = [
+    path for path in output_files if path.lower().endswith((".dcm", ".seg.dcm"))
+]
 
-print("Output directory:", result["output_dir"])
-print("Output files:")
-for path in result["output_files"]:
+if not dicom_outputs:
+    raise RuntimeError(
+        "Inference completed, but no DICOM output files were reported. "
+        f"All output files: {output_files}"
+    )
+
+print("Verified DICOM output files:")
+for path in dicom_outputs:
     print(path)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Next steps
+# MAGIC ## Record for handoff
 # MAGIC
-# MAGIC - Use this notebook first with `spleen_ct_segmentation` and a small CT NIfTI file.
-# MAGIC - Record the Databricks Runtime version, compute type, model URI, and output file paths.
-# MAGIC - After the direct bundle path is validated, extend testing to DICOM SEG output and larger bundles.
+# MAGIC Capture the following values for the Databricks handoff:
+# MAGIC
+# MAGIC - Databricks Runtime version and compute type
+# MAGIC - `model_id`
+# MAGIC - `input_dicom_dir`
+# MAGIC - `model_uri`
+# MAGIC - verified DICOM output file paths
