@@ -36,6 +36,8 @@ DEFAULT_PIPELINE_GENERATOR_DIR = "/tmp/pixels_monai_flow/tools/pipeline-generato
 DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "setuptools<82",
     "wheel",
+    "filelock",
+    "wheel-axle-runtime<1.0",
     "monai>=1.5",
     "monai-deploy-app-sdk==3.5.0",
     "holoscan==4.0.0",

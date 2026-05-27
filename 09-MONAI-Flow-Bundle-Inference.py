@@ -32,6 +32,8 @@ from pathlib import Path
 MONAI_DEPLOY_PACKAGES = [
     "setuptools<82",
     "wheel",
+    "filelock",
+    "wheel-axle-runtime<1.0",
     "monai>=1.5",
     "monai-deploy-app-sdk==3.5.0",
     "holoscan==4.0.0",
@@ -62,6 +64,26 @@ subprocess.check_call(
         *MONAI_DEPLOY_PACKAGES,
     ]
 )
+importlib.invalidate_caches()
+
+# holoscan-cu12 uses a wheel-axle .pth hook to finish installing shared
+# libraries. Databricks notebooks keep the current Python process alive after
+# pip installs, so run the hook explicitly instead of relying on interpreter
+# startup to process the new .pth file.
+try:
+    import site
+    import wheel_axle.runtime
+
+    site_dirs = list(site.getsitepackages())
+    user_site = site.getusersitepackages()
+    if user_site:
+        site_dirs.append(user_site)
+    for site_dir in site_dirs:
+        for pth_path in Path(site_dir).glob("holoscan_cu12-*.pth"):
+            wheel_axle.runtime.finalize(str(pth_path))
+except Exception as exc:
+    raise RuntimeError("Failed to activate holoscan-cu12 wheel-axle runtime") from exc
+
 importlib.invalidate_caches()
 
 # COMMAND ----------
