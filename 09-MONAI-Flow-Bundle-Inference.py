@@ -22,6 +22,7 @@
 # DBTITLE 1,Initialize Pixels MONAI runtime
 import importlib
 import os
+import sys
 from pathlib import Path
 
 # Serverless GPU owns CUDA and PyTorch. Keep MLflow and Databricks Connect
@@ -76,12 +77,84 @@ def _pip_install(packages, *, no_deps):
         raise RuntimeError(f"pip install failed with exit code {exit_code}: {packages}")
 
 
+def _version_tuple(version):
+    parts = []
+    for token in str(version).split("."):
+        digits = "".join(ch for ch in token if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _version_in_range(version, min_version, max_version):
+    parsed = _version_tuple(version)
+    return parsed >= _version_tuple(min_version) and parsed < _version_tuple(max_version)
+
+
+def _prefer_distribution_site(distribution_name, min_version, max_version):
+    import importlib.metadata as metadata
+    import site
+
+    roots = []
+    for entry in list(sys.path) + site.getsitepackages() + [site.getusersitepackages()]:
+        if not entry:
+            continue
+        root = Path(entry).resolve()
+        if not root.is_dir() or root in roots:
+            continue
+        roots.append(root)
+
+    candidates = []
+    for root in roots:
+        for dist in metadata.distributions(path=[str(root)]):
+            name = (dist.metadata.get("Name") or "").lower().replace("_", "-")
+            if name == distribution_name.lower().replace("_", "-"):
+                candidates.append((dist.version, str(root)))
+
+    candidates.sort(key=lambda item: _version_tuple(item[0]), reverse=True)
+    for version, root in candidates:
+        if _version_in_range(version, min_version, max_version):
+            sys.path[:] = [entry for entry in sys.path if str(Path(entry).resolve()) != root]
+            sys.path.insert(0, root)
+            return version, root
+    return None, None
+
+
+def _ensure_imported_runtime(distribution_name, module_name, min_version, max_version):
+    expected_version, expected_root = _prefer_distribution_site(
+        distribution_name, min_version, max_version
+    )
+    if expected_version is None:
+        raise RuntimeError(
+            f"{distribution_name} {min_version} <= version < {max_version} was not installed."
+        )
+
+    loaded = sys.modules.get(module_name)
+    loaded_version = getattr(loaded, "__version__", "") if loaded is not None else ""
+    if loaded is not None and not _version_in_range(loaded_version, min_version, max_version):
+        for name in list(sys.modules):
+            if name == module_name or name.startswith(module_name + "."):
+                del sys.modules[name]
+
+    importlib.invalidate_caches()
+    module = importlib.import_module(module_name)
+    active_version = getattr(module, "__version__", "")
+    if not _version_in_range(active_version, min_version, max_version):
+        raise RuntimeError(
+            f"Active {module_name} is {active_version} from {getattr(module, '__file__', 'unknown')}; "
+            f"expected {distribution_name} {min_version} <= version < {max_version} from {expected_root}."
+        )
+    print(f"Using {module_name} {active_version} from {getattr(module, '__file__', expected_root)}")
+
+
 # Run pip in-process so a stale holoscan-cu12 .pth from an earlier failed
 # install cannot emit startup warnings before wheel-axle-runtime is available.
 _pip_install(BOOTSTRAP_PACKAGES, no_deps=True)
 _pip_install(MONAI_DEPLOY_PACKAGES, no_deps=True)
 _pip_install(DATABRICKS_SERVERLESS_PACKAGES + TRITON_CLIENT_PACKAGES, no_deps=False)
 importlib.invalidate_caches()
+_ensure_imported_runtime("grpcio", "grpc", "1.67.1", "1.68")
 
 # holoscan-cu12 uses a wheel-axle .pth hook to finish installing shared
 # libraries. Databricks notebooks keep the current Python process alive after
