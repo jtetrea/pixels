@@ -92,6 +92,24 @@ def test_merge_requirements_keeps_first_package_specifier():
     assert requirements == ["monai>=1.5", "pydicom>=2.3", "highdicom"]
 
 
+def test_runtime_requirements_override_generated_app_pins():
+    from dbx.pixels.modelserving.bundles.monai_flow import (
+        DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS,
+    )
+
+    requirements = _merge_requirements(
+        DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS,
+        ["monai==1.4.0", "torch==2.4.0", "monai-deploy-app-sdk>=3.0.0"],
+    )
+
+    assert "monai>=1.5" in requirements
+    assert "torch" in requirements
+    assert "monai-deploy-app-sdk==3.5.0" in requirements
+    assert "monai==1.4.0" not in requirements
+    assert "torch==2.4.0" not in requirements
+    assert "monai-deploy-app-sdk>=3.0.0" not in requirements
+
+
 def test_deploy_app_model_normalizes_inputs():
     model = MonaiDeployAppModel()
 
@@ -118,6 +136,7 @@ def test_runtime_requirements_pin_non_breaking_holoscan():
         DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS,
     )
 
+    assert "wheel" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "monai-deploy-app-sdk==3.5.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "holoscan==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "holoscan-cu12==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS

@@ -35,6 +35,7 @@ DEFAULT_PIPELINE_GENERATOR_BRANCH = "main"
 DEFAULT_PIPELINE_GENERATOR_DIR = "/tmp/pixels_monai_flow/tools/pipeline-generator"
 DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "setuptools<82",
+    "wheel",
     "monai>=1.5",
     "monai-deploy-app-sdk==3.5.0",
     "holoscan==4.0.0",
@@ -43,12 +44,15 @@ DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "typeguard>=3.0.0",
     "pydicom>=2.3",
     "highdicom",
+    "pyjpegls",
     "nibabel",
     "SimpleITK>=2.0",
     "numpy",
     "scipy",
     "scikit-image",
     "Pillow",
+    "numpy-stl>=3.0",
+    "trimesh",
     "torch",
     "torchvision",
     "pytorch-ignite>=0.4",
@@ -148,7 +152,7 @@ def ensure_monai_deploy_pipeline_generator(
             shutil.copytree(source_dir, target_dir)
 
     _relax_pipeline_generator_python_constraint(target_dir)
-    _run_command([sys.executable, "-m", "pip", "install", "-e", str(target_dir)])
+    _run_command([sys.executable, "-m", "pip", "install", "-q", "-e", str(target_dir)])
     pg = _pipeline_generator_executable()
     if not pg:
         raise FileNotFoundError(
@@ -351,7 +355,7 @@ def log_monai_flow_bundle(
     app_requirements = _load_requirements(
         requirements_path or os.path.join(deploy_app_dir, "requirements.txt")
     )
-    pip_requirements = _merge_requirements(app_requirements, DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS)
+    pip_requirements = _merge_requirements(DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS, app_requirements)
 
     if experiment_name:
         mlflow_module.set_experiment(experiment_name)
