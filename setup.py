@@ -73,7 +73,8 @@ setup(
     package_data={"databricks": ["pixels/resources/*"]},
     extras_require={
         "dev": [
-            "databricks-connect>=16.1.0",
+            "databricks-connect>=15.4.2,<16",
+            "mlflow>=2.17,<3.0",
             "databricks-sdk==0.88.0",
             "autoflake",
             "black",

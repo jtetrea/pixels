@@ -139,10 +139,14 @@ def test_runtime_requirements_pin_non_breaking_holoscan():
     assert "wheel" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "filelock" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "wheel-axle-runtime<1.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "mlflow>=2.17,<3.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "databricks-connect>=15.4.2,<16" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "monai-deploy-app-sdk==3.5.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "holoscan==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "holoscan-cu12==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "protobuf>=5.26.1,<6.0dev" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "grpcio>=1.67.1,<1.68" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "grpcio-status>=1.67.1,<1.68" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "tritonclient[http,grpc]==2.60.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
 
 

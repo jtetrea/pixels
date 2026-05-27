@@ -24,12 +24,16 @@ import importlib
 import os
 from pathlib import Path
 
-# Serverless GPU owns CUDA, PyTorch, MLflow, and Databricks Connect. Install only
-# the MONAI Deploy stack and DICOM helpers needed by this workflow, without
-# dependency resolution that can upgrade Databricks-managed packages.
+# Serverless GPU owns CUDA and PyTorch. Keep MLflow and Databricks Connect
+# inside the serverless-gpu package contract while installing only the MONAI
+# Deploy stack and DICOM helpers needed by this workflow.
 BOOTSTRAP_PACKAGES = [
     "filelock",
     "wheel-axle-runtime<1.0",
+]
+DATABRICKS_SERVERLESS_PACKAGES = [
+    "mlflow>=2.17,<3.0",
+    "databricks-connect>=15.4.2,<16",
 ]
 MONAI_DEPLOY_PACKAGES = [
     "setuptools<82",
@@ -55,6 +59,7 @@ MONAI_DEPLOY_PACKAGES = [
 TRITON_CLIENT_PACKAGES = [
     "protobuf>=5.26.1,<6.0dev",
     "grpcio>=1.67.1,<1.68",
+    "grpcio-status>=1.67.1,<1.68",
     "tritonclient[http,grpc]==2.60.0",
 ]
 
@@ -75,7 +80,7 @@ def _pip_install(packages, *, no_deps):
 # install cannot emit startup warnings before wheel-axle-runtime is available.
 _pip_install(BOOTSTRAP_PACKAGES, no_deps=True)
 _pip_install(MONAI_DEPLOY_PACKAGES, no_deps=True)
-_pip_install(TRITON_CLIENT_PACKAGES, no_deps=False)
+_pip_install(DATABRICKS_SERVERLESS_PACKAGES + TRITON_CLIENT_PACKAGES, no_deps=False)
 importlib.invalidate_caches()
 
 # holoscan-cu12 uses a wheel-axle .pth hook to finish installing shared
