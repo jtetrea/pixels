@@ -53,7 +53,8 @@ MONAI_DEPLOY_PACKAGES = [
     "trimesh",
 ]
 TRITON_CLIENT_PACKAGES = [
-    "tritonclient[http,grpc]>=2.68.0",
+    "protobuf>=5.26.1,<6.0dev",
+    "tritonclient[http,grpc]==2.60.0",
 ]
 
 

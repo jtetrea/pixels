@@ -55,7 +55,7 @@ DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "Pillow",
     "numpy-stl>=3.0",
     "trimesh",
-    "tritonclient[http,grpc]>=2.68.0",
+    "tritonclient[http,grpc]==2.60.0",
     "torch",
     "torchvision",
     "pytorch-ignite>=0.4",
