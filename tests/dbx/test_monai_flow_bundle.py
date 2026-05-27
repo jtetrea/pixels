@@ -142,6 +142,7 @@ def test_runtime_requirements_pin_non_breaking_holoscan():
     assert "monai-deploy-app-sdk==3.5.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "holoscan==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "holoscan-cu12==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "grpcio>=1.67.1,<1.68" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "tritonclient[http,grpc]==2.60.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
 
 

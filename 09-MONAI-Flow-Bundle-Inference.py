@@ -54,6 +54,7 @@ MONAI_DEPLOY_PACKAGES = [
 ]
 TRITON_CLIENT_PACKAGES = [
     "protobuf>=5.26.1,<6.0dev",
+    "grpcio>=1.67.1,<1.68",
     "tritonclient[http,grpc]==2.60.0",
 ]
 
