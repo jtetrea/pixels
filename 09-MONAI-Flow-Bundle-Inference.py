@@ -22,18 +22,18 @@
 # DBTITLE 1,Initialize Pixels MONAI runtime
 import importlib
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 # Serverless GPU owns CUDA, PyTorch, MLflow, and Databricks Connect. Install only
 # the MONAI Deploy stack and DICOM helpers needed by this workflow, without
 # dependency resolution that can upgrade Databricks-managed packages.
+BOOTSTRAP_PACKAGES = [
+    "filelock",
+    "wheel-axle-runtime<1.0",
+]
 MONAI_DEPLOY_PACKAGES = [
     "setuptools<82",
     "wheel",
-    "filelock",
-    "wheel-axle-runtime<1.0",
     "monai>=1.5",
     "monai-deploy-app-sdk==3.5.0",
     "holoscan==4.0.0",
@@ -52,18 +52,28 @@ MONAI_DEPLOY_PACKAGES = [
     "numpy-stl>=3.0",
     "trimesh",
 ]
-subprocess.check_call(
-    [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "-q",
-        "--disable-pip-version-check",
-        "--no-deps",
-        *MONAI_DEPLOY_PACKAGES,
-    ]
-)
+TRITON_CLIENT_PACKAGES = [
+    "tritonclient[http,grpc]>=2.68.0",
+]
+
+
+def _pip_install(packages, *, no_deps):
+    from pip._internal.cli.main import main as pip_main
+
+    args = ["install", "-q", "--disable-pip-version-check"]
+    if no_deps:
+        args.append("--no-deps")
+    args.extend(packages)
+    exit_code = pip_main(args)
+    if exit_code:
+        raise RuntimeError(f"pip install failed with exit code {exit_code}: {packages}")
+
+
+# Run pip in-process so a stale holoscan-cu12 .pth from an earlier failed
+# install cannot emit startup warnings before wheel-axle-runtime is available.
+_pip_install(BOOTSTRAP_PACKAGES, no_deps=True)
+_pip_install(MONAI_DEPLOY_PACKAGES, no_deps=True)
+_pip_install(TRITON_CLIENT_PACKAGES, no_deps=False)
 importlib.invalidate_caches()
 
 # holoscan-cu12 uses a wheel-axle .pth hook to finish installing shared
