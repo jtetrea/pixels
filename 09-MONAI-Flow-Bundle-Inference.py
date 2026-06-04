@@ -23,7 +23,10 @@
 import importlib
 import os
 import sys
+import tempfile
 from pathlib import Path
+
+sys.dont_write_bytecode = True
 
 # Serverless GPU owns CUDA and PyTorch. Keep MLflow and Databricks Connect
 # inside the serverless-gpu package contract while installing only the MONAI
@@ -52,9 +55,11 @@ MONAI_DEPLOY_PACKAGES = [
     "SimpleITK>=2.0",
     "scipy",
     "scikit-image",
+    "lazy-loader>=0.4",
     "Pillow",
     "pytorch-ignite>=0.4",
     "numpy-stl>=3.0",
+    "python-utils>=3.8",
     "trimesh",
 ]
 TRITON_CLIENT_PACKAGES = [
@@ -181,38 +186,56 @@ importlib.invalidate_caches()
 # DBTITLE 1,Configure DICOM MONAI inference
 import mlflow
 
-dbutils.widgets.text(
-    "volume",
-    "catalog.schema.volume_name",
-    label="Configured UC Volume (catalog.schema.volume)",
-)
-dbutils.widgets.text(
-    "model_id",
-    "MONAI/spleen_ct_segmentation",
-    label="Public MONAI model ID for app generation",
-)
-dbutils.widgets.text(
-    "input_dicom_subpath",
-    "dicom_input/series_dir",
-    label="DICOM series directory under the configured UC Volume",
-)
-dbutils.widgets.text(
-    "output_subpath",
-    "monai_flow_output",
-    label="Output directory under the configured UC Volume",
-)
-dbutils.widgets.text(
-    "experiment_name",
-    "",
-    label="Optional MLflow experiment path; defaults to /Users/<creator>/pixels-monai-flow",
-)
-volume_name = dbutils.widgets.get("volume")
+def _databricks_task_parameter(name):
+    try:
+        dbutils  # type: ignore[name-defined]
+    except NameError:
+        return None
+    try:
+        value = dbutils.widgets.get(name)  # type: ignore[name-defined]
+    except Exception:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _config_value(env_name, task_parameter_name, default):
+    value = os.environ.get(env_name)
+    if value and value.strip():
+        return value.strip()
+    value = _databricks_task_parameter(task_parameter_name)
+    if value:
+        return value
+    return default
+
+
+DEFAULT_VOLUME = "catalog.schema.volume_name"
+DEFAULT_MODEL_ID = "MONAI/spleen_ct_segmentation"
+DEFAULT_INPUT_DICOM_SUBPATH = "dicom_input/series_dir"
+DEFAULT_OUTPUT_SUBPATH = "monai_flow_output"
+DEFAULT_EXPERIMENT_NAME = ""
+
+volume_name = _config_value("PIXELS_MONAI_VOLUME", "volume", DEFAULT_VOLUME)
 volume_root = "/Volumes/" + volume_name.replace(".", "/")
-input_dicom_dir = f"{volume_root}/{dbutils.widgets.get('input_dicom_subpath').strip('/')}"
-output_dir = f"{volume_root}/{dbutils.widgets.get('output_subpath').strip('/')}"
-model_id = dbutils.widgets.get("model_id").strip()
-experiment_name = dbutils.widgets.get("experiment_name").strip()
-work_root = Path("/tmp/pixels_monai_flow")
+input_dicom_subpath = _config_value(
+    "PIXELS_MONAI_INPUT_DICOM_SUBPATH",
+    "input_dicom_subpath",
+    DEFAULT_INPUT_DICOM_SUBPATH,
+)
+output_subpath = _config_value(
+    "PIXELS_MONAI_OUTPUT_SUBPATH",
+    "output_subpath",
+    DEFAULT_OUTPUT_SUBPATH,
+)
+input_dicom_dir = f"{volume_root}/{input_dicom_subpath.strip('/')}"
+output_dir = f"{volume_root}/{output_subpath.strip('/')}"
+model_id = _config_value("PIXELS_MONAI_MODEL_ID", "model_id", DEFAULT_MODEL_ID)
+experiment_name = _config_value(
+    "PIXELS_MONAI_EXPERIMENT_NAME",
+    "experiment_name",
+    DEFAULT_EXPERIMENT_NAME,
+)
+work_root = Path(tempfile.mkdtemp(prefix="pixels_monai_flow_"))
 
 print(f"Volume root: {volume_root}")
 print(f"DICOM input directory: {input_dicom_dir}")

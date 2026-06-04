@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 import shutil
 import subprocess
 import sys
@@ -54,8 +55,10 @@ DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "numpy",
     "scipy",
     "scikit-image",
+    "lazy-loader>=0.4",
     "Pillow",
     "numpy-stl>=3.0",
+    "python-utils>=3.8",
     "trimesh",
     "protobuf>=5.26.1,<6.0dev",
     "grpcio>=1.67.1,<1.68",
@@ -82,6 +85,14 @@ def _require_mlflow():
             "ML runtime or install mlflow before calling log_monai_flow_bundle."
         ) from e
     return mlflow_module, infer_signature
+
+
+def _log_pyfunc_model(mlflow_module: Any, *, name: str, **kwargs: Any) -> None:
+    """Call MLflow pyfunc logging with MLflow 2/3 compatible path naming."""
+    if "name" in inspect.signature(mlflow_module.pyfunc.log_model).parameters:
+        mlflow_module.pyfunc.log_model(name=name, **kwargs)
+    else:
+        mlflow_module.pyfunc.log_model(artifact_path=name, **kwargs)
 
 
 def _run_command(command: Sequence[str], cwd: Optional[str] = None) -> None:
@@ -296,6 +307,7 @@ class MonaiDeployAppModel(_PythonModelBase):
         bundle_path = os.path.join(self.app_dir, "model")
         env = os.environ.copy()
         env["BUNDLE_PATH"] = bundle_path
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         result = subprocess.run(
             [python_exe, app_py, "-i", image_path, "-o", user_output_dir],
             cwd=self.app_dir,
@@ -376,7 +388,8 @@ def log_monai_flow_bundle(
                 print(f"  Model name: {model_name}")
                 if input_example_path:
                     print(f"  Input example: {resolved_input_path}")
-            mlflow_module.pyfunc.log_model(
+            _log_pyfunc_model(
+                mlflow_module,
                 name=model_name,
                 python_model=MonaiDeployAppModel(),
                 artifacts={"deploy_app_dir": artifact_dir},

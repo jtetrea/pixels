@@ -5,6 +5,7 @@ from dbx.pixels.modelserving.bundles.monai_flow import (
     MonaiDeployAppModel,
     MonaiFlowBundleTransformer,
     _build_prediction_payload,
+    _log_pyfunc_model,
     _merge_requirements,
     _normalise_prediction_result,
     _relax_pipeline_generator_python_constraint,
@@ -131,6 +132,26 @@ def test_log_monai_deploy_app_aliases_legacy_helper():
     assert log_monai_deploy_app is log_monai_flow_bundle
 
 
+def test_log_pyfunc_model_supports_mlflow_2_artifact_path():
+    calls = []
+
+    class FakePyfunc:
+        def log_model(self, artifact_path, python_model=None):
+            calls.append(
+                {"artifact_path": artifact_path, "python_model": python_model}
+            )
+
+    class FakeMlflow:
+        pyfunc = FakePyfunc()
+
+    model = object()
+    _log_pyfunc_model(FakeMlflow(), name="monai_deploy_app_model", python_model=model)
+
+    assert calls == [
+        {"artifact_path": "monai_deploy_app_model", "python_model": model}
+    ]
+
+
 def test_runtime_requirements_pin_non_breaking_holoscan():
     from dbx.pixels.modelserving.bundles.monai_flow import (
         DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS,
@@ -148,6 +169,8 @@ def test_runtime_requirements_pin_non_breaking_holoscan():
     assert "grpcio>=1.67.1,<1.68" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "grpcio-status>=1.67.1,<1.68" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "tritonclient[http,grpc]==2.60.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "lazy-loader>=0.4" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "python-utils>=3.8" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
 
 
 def test_relax_pipeline_generator_python_constraint(tmp_path):
