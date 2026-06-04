@@ -1,6 +1,14 @@
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
+from dbx.pixels.modelserving.bundles.monai_runtime import (
+    MONAI_DEPLOY_PACKAGES,
+    REQUIRED_NOTEBOOK_CONFIG,
+    TRITON_CLIENT_PACKAGES,
+    load_monai_notebook_config,
+)
 from dbx.pixels.modelserving.bundles.monai_flow import (
     MonaiDeployAppModel,
     MonaiFlowBundleTransformer,
@@ -171,6 +179,86 @@ def test_runtime_requirements_pin_non_breaking_holoscan():
     assert "tritonclient[http,grpc]==2.60.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "lazy-loader>=0.4" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "python-utils>=3.8" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+
+
+def test_notebook_runtime_packages_include_databricks_fixes():
+    assert "monai==1.5.1" in MONAI_DEPLOY_PACKAGES
+    assert "monai-deploy-app-sdk==3.5.0" in MONAI_DEPLOY_PACKAGES
+    assert "holoscan-cu12==3.10.0" in MONAI_DEPLOY_PACKAGES
+    assert "lazy-loader>=0.4" in MONAI_DEPLOY_PACKAGES
+    assert "python-utils>=3.8" in MONAI_DEPLOY_PACKAGES
+    assert "grpcio>=1.67.1,<1.68" in TRITON_CLIENT_PACKAGES
+    assert "grpcio-status>=1.67.1,<1.68" in TRITON_CLIENT_PACKAGES
+    assert "tritonclient[http,grpc]==2.60.0" in TRITON_CLIENT_PACKAGES
+
+
+def test_notebook_config_requires_values(monkeypatch):
+    for env_name in REQUIRED_NOTEBOOK_CONFIG.values():
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv("PIXELS_MONAI_MODEL_ID", raising=False)
+
+    with pytest.raises(ValueError, match="Notebook 9 requires"):
+        load_monai_notebook_config()
+
+
+def test_notebook_config_uses_overrides(monkeypatch):
+    for env_name in REQUIRED_NOTEBOOK_CONFIG.values():
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv("PIXELS_MONAI_MODEL_ID", raising=False)
+
+    config = load_monai_notebook_config(
+        overrides={
+            "volume": "main.schema.volume",
+            "input_dicom_subpath": "input/series",
+            "output_subpath": "output/run",
+            "experiment_name": "/Users/example/pixels-monai-flow",
+            "model_id": "MONAI/test_bundle",
+        }
+    )
+
+    assert config.volume_root == "/Volumes/main/schema/volume"
+    assert config.input_dicom_dir == "/Volumes/main/schema/volume/input/series"
+    assert config.output_dir == "/Volumes/main/schema/volume/output/run"
+    assert config.model_id == "MONAI/test_bundle"
+    assert config.experiment_name == "/Users/example/pixels-monai-flow"
+
+
+def test_notebook_config_uses_task_parameters(monkeypatch):
+    for env_name in REQUIRED_NOTEBOOK_CONFIG.values():
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv("PIXELS_MONAI_MODEL_ID", raising=False)
+
+    class Widgets:
+        values = {
+            "volume": "main.schema.volume",
+            "input_dicom_subpath": "input/series",
+            "output_subpath": "output/run",
+            "experiment_name": "/Users/example/pixels-monai-flow",
+            "model_id": "MONAI/task_bundle",
+        }
+
+        def get(self, name):
+            return self.values[name]
+
+    class Dbutils:
+        widgets = Widgets()
+
+    config = load_monai_notebook_config(dbutils=Dbutils())
+
+    assert config.model_id == "MONAI/task_bundle"
+    assert config.output_dir == "/Volumes/main/schema/volume/output/run"
+
+
+def test_notebook_top_cell_has_blank_public_config():
+    notebook = Path("09-MONAI-Flow-Bundle-Inference.py").read_text(encoding="utf-8")
+
+    assert 'PIXELS_MONAI_VOLUME = ""' in notebook
+    assert 'PIXELS_MONAI_INPUT_DICOM_SUBPATH = ""' in notebook
+    assert 'PIXELS_MONAI_OUTPUT_SUBPATH = ""' in notebook
+    assert 'PIXELS_MONAI_EXPERIMENT_NAME = ""' in notebook
+    assert "catalog.schema.volume_name" not in notebook
+    assert "edsp-wwfo-ses-itservices" not in notebook
+    assert "dbutils.widgets.text" not in notebook
 
 
 def test_relax_pipeline_generator_python_constraint(tmp_path):

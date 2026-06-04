@@ -19,223 +19,51 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Initialize Pixels MONAI runtime
-import importlib
+# DBTITLE 1,Set workflow configuration
 import os
-import sys
-import tempfile
 from pathlib import Path
 
-sys.dont_write_bytecode = True
+# Set these four values before running all cells. Databricks jobs can also pass
+# them as task parameters, and advanced users can set the matching environment
+# variables before this notebook runs.
+PIXELS_MONAI_VOLUME = ""
+PIXELS_MONAI_INPUT_DICOM_SUBPATH = ""
+PIXELS_MONAI_OUTPUT_SUBPATH = ""
+PIXELS_MONAI_EXPERIMENT_NAME = ""
 
-# Serverless GPU owns CUDA and PyTorch. Keep MLflow and Databricks Connect
-# inside the serverless-gpu package contract while installing only the MONAI
-# Deploy stack and DICOM helpers needed by this workflow.
-BOOTSTRAP_PACKAGES = [
-    "filelock",
-    "wheel-axle-runtime<1.0",
-]
-DATABRICKS_SERVERLESS_PACKAGES = [
-    "mlflow>=2.17,<3.0",
-    "databricks-connect>=15.4.2,<16",
-]
-MONAI_DEPLOY_PACKAGES = [
-    "setuptools<82",
-    "wheel",
-    "monai==1.5.1",
-    "monai-deploy-app-sdk==3.5.0",
-    "holoscan==3.10.0",
-    "holoscan-cu12==3.10.0",
-    "colorama>=0.4.1",
-    "typeguard>=3.0.0",
-    "pydicom>=2.3",
-    "highdicom",
-    "pyjpegls",
-    "nibabel",
-    "SimpleITK>=2.0",
-    "scipy",
-    "scikit-image",
-    "lazy-loader>=0.4",
-    "Pillow",
-    "pytorch-ignite>=0.4",
-    "numpy-stl>=3.0",
-    "python-utils>=3.8",
-    "trimesh",
-]
-TRITON_CLIENT_PACKAGES = [
-    "protobuf>=5.26.1,<6.0dev",
-    "grpcio>=1.67.1,<1.68",
-    "grpcio-status>=1.67.1,<1.68",
-    "tritonclient[http,grpc]==2.60.0",
-]
+PIXELS_MONAI_MODEL_ID = "MONAI/spleen_ct_segmentation"
 
+# COMMAND ----------
 
-def _pip_install(packages, *, no_deps):
-    from pip._internal.cli.main import main as pip_main
+# DBTITLE 1,Initialize Pixels MONAI runtime
+from dbx.pixels.modelserving.bundles.monai_runtime import ensure_monai_runtime
 
-    args = ["install", "-q", "--disable-pip-version-check"]
-    if no_deps:
-        args.append("--no-deps")
-    args.extend(packages)
-    exit_code = pip_main(args)
-    if exit_code:
-        raise RuntimeError(f"pip install failed with exit code {exit_code}: {packages}")
-
-
-def _version_tuple(version):
-    parts = []
-    for token in str(version).split("."):
-        digits = "".join(ch for ch in token if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    return tuple(parts)
-
-
-def _version_in_range(version, min_version, max_version):
-    parsed = _version_tuple(version)
-    return parsed >= _version_tuple(min_version) and parsed < _version_tuple(max_version)
-
-
-def _prefer_distribution_site(distribution_name, min_version, max_version):
-    import importlib.metadata as metadata
-    import site
-
-    roots = []
-    for entry in list(sys.path) + site.getsitepackages() + [site.getusersitepackages()]:
-        if not entry:
-            continue
-        root = Path(entry).resolve()
-        if not root.is_dir() or root in roots:
-            continue
-        roots.append(root)
-
-    candidates = []
-    for root in roots:
-        for dist in metadata.distributions(path=[str(root)]):
-            name = (dist.metadata.get("Name") or "").lower().replace("_", "-")
-            if name == distribution_name.lower().replace("_", "-"):
-                candidates.append((dist.version, str(root)))
-
-    candidates.sort(key=lambda item: _version_tuple(item[0]), reverse=True)
-    for version, root in candidates:
-        if _version_in_range(version, min_version, max_version):
-            sys.path[:] = [entry for entry in sys.path if str(Path(entry).resolve()) != root]
-            sys.path.insert(0, root)
-            return version, root
-    return None, None
-
-
-def _ensure_imported_runtime(distribution_name, module_name, min_version, max_version):
-    expected_version, expected_root = _prefer_distribution_site(
-        distribution_name, min_version, max_version
-    )
-    if expected_version is None:
-        raise RuntimeError(
-            f"{distribution_name} {min_version} <= version < {max_version} was not installed."
-        )
-
-    loaded = sys.modules.get(module_name)
-    loaded_version = getattr(loaded, "__version__", "") if loaded is not None else ""
-    if loaded is not None and not _version_in_range(loaded_version, min_version, max_version):
-        for name in list(sys.modules):
-            if name == module_name or name.startswith(module_name + "."):
-                del sys.modules[name]
-
-    importlib.invalidate_caches()
-    module = importlib.import_module(module_name)
-    active_version = getattr(module, "__version__", "")
-    if not _version_in_range(active_version, min_version, max_version):
-        raise RuntimeError(
-            f"Active {module_name} is {active_version} from {getattr(module, '__file__', 'unknown')}; "
-            f"expected {distribution_name} {min_version} <= version < {max_version} from {expected_root}."
-        )
-    print(f"Using {module_name} {active_version} from {getattr(module, '__file__', expected_root)}")
-
-
-# Run pip in-process so a stale holoscan-cu12 .pth from an earlier failed
-# install cannot emit startup warnings before wheel-axle-runtime is available.
-_pip_install(BOOTSTRAP_PACKAGES, no_deps=True)
-_pip_install(MONAI_DEPLOY_PACKAGES, no_deps=True)
-_pip_install(DATABRICKS_SERVERLESS_PACKAGES + TRITON_CLIENT_PACKAGES, no_deps=False)
-importlib.invalidate_caches()
-_ensure_imported_runtime("grpcio", "grpc", "1.67.1", "1.68")
-
-# holoscan-cu12 uses a wheel-axle .pth hook to finish installing shared
-# libraries. Databricks notebooks keep the current Python process alive after
-# pip installs, so run the hook explicitly instead of relying on interpreter
-# startup to process the new .pth file.
-try:
-    import site
-    import wheel_axle.runtime
-
-    site_dirs = list(site.getsitepackages())
-    user_site = site.getusersitepackages()
-    if user_site:
-        site_dirs.append(user_site)
-    for site_dir in site_dirs:
-        for pth_path in Path(site_dir).glob("holoscan_cu12-*.pth"):
-            wheel_axle.runtime.finalize(str(pth_path))
-except Exception as exc:
-    raise RuntimeError("Failed to activate holoscan-cu12 wheel-axle runtime") from exc
-
-importlib.invalidate_caches()
+ensure_monai_runtime()
 
 # COMMAND ----------
 
 # DBTITLE 1,Configure DICOM MONAI inference
 import mlflow
+from dbx.pixels.modelserving.bundles.monai_runtime import load_monai_notebook_config
 
-def _databricks_task_parameter(name):
-    try:
-        dbutils  # type: ignore[name-defined]
-    except NameError:
-        return None
-    try:
-        value = dbutils.widgets.get(name)  # type: ignore[name-defined]
-    except Exception:
-        return None
-    value = value.strip()
-    return value or None
-
-
-def _config_value(env_name, task_parameter_name, default):
-    value = os.environ.get(env_name)
-    if value and value.strip():
-        return value.strip()
-    value = _databricks_task_parameter(task_parameter_name)
-    if value:
-        return value
-    return default
-
-
-DEFAULT_VOLUME = "catalog.schema.volume_name"
-DEFAULT_MODEL_ID = "MONAI/spleen_ct_segmentation"
-DEFAULT_INPUT_DICOM_SUBPATH = "dicom_input/series_dir"
-DEFAULT_OUTPUT_SUBPATH = "monai_flow_output"
-DEFAULT_EXPERIMENT_NAME = ""
-
-volume_name = _config_value("PIXELS_MONAI_VOLUME", "volume", DEFAULT_VOLUME)
-volume_root = "/Volumes/" + volume_name.replace(".", "/")
-input_dicom_subpath = _config_value(
-    "PIXELS_MONAI_INPUT_DICOM_SUBPATH",
-    "input_dicom_subpath",
-    DEFAULT_INPUT_DICOM_SUBPATH,
+config = load_monai_notebook_config(
+    dbutils=globals().get("dbutils"),
+    overrides={
+        "volume": PIXELS_MONAI_VOLUME,
+        "input_dicom_subpath": PIXELS_MONAI_INPUT_DICOM_SUBPATH,
+        "output_subpath": PIXELS_MONAI_OUTPUT_SUBPATH,
+        "experiment_name": PIXELS_MONAI_EXPERIMENT_NAME,
+        "model_id": PIXELS_MONAI_MODEL_ID,
+    },
 )
-output_subpath = _config_value(
-    "PIXELS_MONAI_OUTPUT_SUBPATH",
-    "output_subpath",
-    DEFAULT_OUTPUT_SUBPATH,
-)
-input_dicom_dir = f"{volume_root}/{input_dicom_subpath.strip('/')}"
-output_dir = f"{volume_root}/{output_subpath.strip('/')}"
-model_id = _config_value("PIXELS_MONAI_MODEL_ID", "model_id", DEFAULT_MODEL_ID)
-experiment_name = _config_value(
-    "PIXELS_MONAI_EXPERIMENT_NAME",
-    "experiment_name",
-    DEFAULT_EXPERIMENT_NAME,
-)
-work_root = Path(tempfile.mkdtemp(prefix="pixels_monai_flow_"))
+
+volume_name = config.volume_name
+volume_root = config.volume_root
+input_dicom_dir = config.input_dicom_dir
+output_dir = config.output_dir
+model_id = config.model_id
+experiment_name = config.experiment_name
+work_root = config.work_root
 
 print(f"Volume root: {volume_root}")
 print(f"DICOM input directory: {input_dicom_dir}")
@@ -252,34 +80,16 @@ print(f"Model ID: {model_id}")
 # COMMAND ----------
 
 # DBTITLE 1,Validate MONAI deploy dependencies
-import importlib.metadata as metadata
-
-import holoscan
-import monai
-import monai.deploy.conditions
-import torch
-
-print(
-    f"monai {monai.__version__}, "
-    f"monai-deploy {metadata.version('monai-deploy-app-sdk')}, "
-    f"holoscan-cu12 {metadata.version('holoscan-cu12')}, "
-    f"holoscan {holoscan.__version__}, torch {torch.__version__}, "
-    f"mlflow {mlflow.__version__}"
+from dbx.pixels.modelserving.bundles.monai_runtime import (
+    print_runtime_summary,
+    validate_monai_runtime,
 )
-print(f"CUDA available: {torch.cuda.is_available()}")
-if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name(0)}")
+
+print_runtime_summary(validate_monai_runtime())
 
 # COMMAND ----------
 
 # DBTITLE 1,Validate inputs and MLflow experiment
-if not experiment_name:
-    try:
-        creator = spark.sql("SELECT current_user()").first()[0]
-    except Exception:
-        creator = "Shared"
-    experiment_name = f"/Users/{creator}/pixels-monai-flow"
-
 if not os.path.isdir(input_dicom_dir):
     raise FileNotFoundError(
         f"DICOM input directory not found: {input_dicom_dir}. Upload a DICOM "
