@@ -39,10 +39,10 @@ DATABRICKS_SERVERLESS_PACKAGES = [
 MONAI_DEPLOY_PACKAGES = [
     "setuptools<82",
     "wheel",
-    "monai>=1.5",
+    "monai==1.5.1",
     "monai-deploy-app-sdk==3.5.0",
-    "holoscan==4.0.0",
-    "holoscan-cu12==4.0.0",
+    "holoscan==3.10.0",
+    "holoscan-cu12==3.10.0",
     "colorama>=0.4.1",
     "typeguard>=3.0.0",
     "pydicom>=2.3",

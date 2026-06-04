@@ -102,7 +102,7 @@ def test_runtime_requirements_override_generated_app_pins():
         ["monai==1.4.0", "torch==2.4.0", "monai-deploy-app-sdk>=3.0.0"],
     )
 
-    assert "monai>=1.5" in requirements
+    assert "monai==1.5.1" in requirements
     assert "torch" in requirements
     assert "monai-deploy-app-sdk==3.5.0" in requirements
     assert "monai==1.4.0" not in requirements
@@ -142,8 +142,8 @@ def test_runtime_requirements_pin_non_breaking_holoscan():
     assert "mlflow>=2.17,<3.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "databricks-connect>=15.4.2,<16" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "monai-deploy-app-sdk==3.5.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
-    assert "holoscan==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
-    assert "holoscan-cu12==4.0.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "holoscan==3.10.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
+    assert "holoscan-cu12==3.10.0" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "protobuf>=5.26.1,<6.0dev" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "grpcio>=1.67.1,<1.68" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
     assert "grpcio-status>=1.67.1,<1.68" in DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS
