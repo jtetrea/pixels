@@ -23,6 +23,13 @@ path is stable.
 | `dbx/pixels/modelserving/bundles/monai_flow.py` | Added | Self-contained Pixels helpers for MONAI Deploy app generation, MLflow pyfunc logging, generated app prediction, output normalization, and optional Spark transformer support. |
 | `dbx/pixels/modelserving/bundles/__init__.py` | Added | Exports the MONAI helper APIs from `dbx.pixels.modelserving.bundles`. |
 | `tests/dbx/test_monai_flow_bundle.py` | Added | Focused unit coverage for payload construction, result normalization, deploy app model input handling, runtime pins, generator compatibility handling, and transformer configuration. |
+
+The MONAI Deploy pyfunc wrapper now uses `deidentified_safe` DICOM metadata
+handling by default. If a redacted source series removes Type 2 fields that
+`highdicom.seg.Segmentation` reads directly, such as `PatientBirthDate`, the
+wrapper fills those missing fields as zero-length values in a temporary copy
+before invoking the generated app. The existing MONAI Label
+`HighDicomSegWriter` is not modified.
 | `README.md` | Modified | Adds a short section describing the DICOM MONAI MLflow notebook and adds third-party acknowledgements for MONAI/MLflow-related dependencies. |
 | `DICOM_MONAI_MLFLOW_HANDOFF.md` | Added | This brief Databricks-facing branch summary for email/PR context. |
 
@@ -37,8 +44,8 @@ insertions and 2 deletions.
 - The notebook installs only the MONAI runtime packages needed for this flow and
   avoids resolving/upgrading Databricks-managed packages.
 - MONAI Deploy is pinned to `monai-deploy-app-sdk==3.5.0`.
-- Holoscan is pinned to `holoscan==4.0.0` / `holoscan-cu12==4.0.0` because
-  Holoscan 4.1+ removes the `holoscan.graphs` API used by MONAI Deploy 3.5.
+- Holoscan is pinned to `holoscan==3.10.0` / `holoscan-cu12==3.10.0` because
+  this is the validated MONAI Deploy 3.5 CUDA 12 stack for the notebook path.
 - Model weights and generated apps are not committed. They are downloaded or
   generated at notebook runtime.
 

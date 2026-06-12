@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
@@ -34,6 +35,27 @@ except ImportError:  # pragma: no cover - allows local helper tests without MLfl
 DEFAULT_PIPELINE_GENERATOR_REPO = "https://github.com/Project-MONAI/monai-deploy-app-sdk.git"
 DEFAULT_PIPELINE_GENERATOR_BRANCH = "main"
 DEFAULT_PIPELINE_GENERATOR_DIR = "/tmp/pixels_monai_flow/tools/pipeline-generator"
+STRICT_DICOM_METADATA_POLICY = "strict"
+DEIDENTIFIED_SAFE_DICOM_METADATA_POLICY = "deidentified_safe"
+DEFAULT_DICOM_METADATA_POLICY = DEIDENTIFIED_SAFE_DICOM_METADATA_POLICY
+SUPPORTED_DICOM_METADATA_POLICIES = {
+    STRICT_DICOM_METADATA_POLICY,
+    DEIDENTIFIED_SAFE_DICOM_METADATA_POLICY,
+}
+
+# highdicom.seg.Segmentation reads these source-image attributes directly.
+# Deidentified data may remove Type 2 tags entirely; zero-length values preserve
+# redaction while satisfying pydicom attribute access.
+DEIDENTIFIED_SAFE_EMPTY_TAGS: Tuple[str, ...] = (
+    "PatientName",
+    "PatientID",
+    "PatientBirthDate",
+    "PatientSex",
+    "AccessionNumber",
+    "StudyID",
+    "StudyDate",
+    "StudyTime",
+)
 DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
     "setuptools<82",
     "wheel",
@@ -72,6 +94,136 @@ DEFAULT_DEPLOY_RUNTIME_REQUIREMENTS = [
 
 class MissingMonaiRuntimeDependency(ImportError):
     """Raised when optional MONAI runtime dependencies are not installed."""
+
+
+@dataclass(frozen=True)
+class DICOMMetadataPreparation:
+    input_path: str
+    output_path: str
+    policy: str
+    files_checked: int = 0
+    files_repaired: int = 0
+    repaired_tags: Tuple[str, ...] = ()
+    temp_dir: Optional[str] = None
+
+
+def _normalize_dicom_metadata_policy(policy: Optional[str]) -> str:
+    resolved = (policy or DEFAULT_DICOM_METADATA_POLICY).strip().lower()
+    if resolved not in SUPPORTED_DICOM_METADATA_POLICIES:
+        supported = ", ".join(sorted(SUPPORTED_DICOM_METADATA_POLICIES))
+        raise ValueError(
+            f"Unsupported dicom_metadata_policy: {policy}. Supported: {supported}."
+        )
+    return resolved
+
+
+def _missing_deidentified_safe_tags(dataset: object) -> Tuple[str, ...]:
+    return tuple(tag for tag in DEIDENTIFIED_SAFE_EMPTY_TAGS if not hasattr(dataset, tag))
+
+
+def _repair_deidentified_safe_dataset(dataset: object) -> Tuple[str, ...]:
+    missing = _missing_deidentified_safe_tags(dataset)
+    for tag in missing:
+        setattr(dataset, tag, "")
+    return missing
+
+
+def _iter_candidate_files(path: Path) -> Iterable[Path]:
+    if path.is_file():
+        yield path
+        return
+    for child in sorted(path.rglob("*")):
+        if child.is_file():
+            yield child
+
+
+def _read_dicom_headers(path: Path):
+    import pydicom
+
+    for candidate in _iter_candidate_files(path):
+        try:
+            yield candidate, pydicom.dcmread(str(candidate), stop_before_pixels=True)
+        except Exception:
+            continue
+
+
+def _copy_one_with_deidentified_repairs(source: Path, destination: Path) -> int:
+    import pydicom
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        dataset = pydicom.dcmread(str(source))
+    except Exception:
+        shutil.copy2(source, destination)
+        return 0
+
+    if _repair_deidentified_safe_dataset(dataset):
+        dataset.save_as(str(destination))
+        return 1
+
+    shutil.copy2(source, destination)
+    return 0
+
+
+def _copy_with_deidentified_repairs(source: Path, destination: Path) -> int:
+    if source.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        return _copy_one_with_deidentified_repairs(source, destination)
+
+    repaired = 0
+    destination.mkdir(parents=True, exist_ok=True)
+    for candidate in _iter_candidate_files(source):
+        repaired += _copy_one_with_deidentified_repairs(
+            candidate,
+            destination / candidate.relative_to(source),
+        )
+    return repaired
+
+
+def _prepare_dicom_input_path(
+    input_path: str,
+    policy: Optional[str] = None,
+) -> DICOMMetadataPreparation:
+    resolved_policy = _normalize_dicom_metadata_policy(policy)
+    input_path = os.path.abspath(input_path)
+    if resolved_policy == STRICT_DICOM_METADATA_POLICY:
+        return DICOMMetadataPreparation(
+            input_path=input_path,
+            output_path=input_path,
+            policy=resolved_policy,
+        )
+
+    source = Path(input_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Input path not found: {input_path}")
+
+    dicom_files = []
+    repaired_tags = set()
+    for _path, dataset in _read_dicom_headers(source):
+        missing = _missing_deidentified_safe_tags(dataset)
+        dicom_files.append(missing)
+        repaired_tags.update(missing)
+
+    if not repaired_tags:
+        return DICOMMetadataPreparation(
+            input_path=input_path,
+            output_path=input_path,
+            policy=resolved_policy,
+            files_checked=len(dicom_files),
+        )
+
+    temp_dir = tempfile.mkdtemp(prefix="pixels_monai_dicom_metadata_")
+    temp_root = Path(temp_dir) / source.name
+    files_repaired = _copy_with_deidentified_repairs(source, temp_root)
+    return DICOMMetadataPreparation(
+        input_path=input_path,
+        output_path=str(temp_root),
+        policy=resolved_policy,
+        files_checked=len(dicom_files),
+        files_repaired=files_repaired,
+        repaired_tags=tuple(sorted(repaired_tags)),
+        temp_dir=temp_dir,
+    )
 
 
 def _require_mlflow():
@@ -299,6 +451,16 @@ class MonaiDeployAppModel(_PythonModelBase):
             user_output_dir = os.path.abspath("monai_output")
         Path(user_output_dir).mkdir(parents=True, exist_ok=True)
 
+        dicom_metadata_policy = (
+            payload.get("dicom_metadata_policy")
+            or os.environ.get("PIXELS_MONAI_DICOM_METADATA_POLICY")
+            or DEFAULT_DICOM_METADATA_POLICY
+        )
+        prepared_input = _prepare_dicom_input_path(
+            image_path,
+            policy=str(dicom_metadata_policy),
+        )
+
         python_exe = os.path.join(self.app_dir, ".venv", "bin", "python")
         if not os.path.isfile(python_exe):
             python_exe = sys.executable
@@ -308,22 +470,42 @@ class MonaiDeployAppModel(_PythonModelBase):
         env = os.environ.copy()
         env["BUNDLE_PATH"] = bundle_path
         env["PYTHONDONTWRITEBYTECODE"] = "1"
-        result = subprocess.run(
-            [python_exe, app_py, "-i", image_path, "-o", user_output_dir],
-            cwd=self.app_dir,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"MONAI Deploy app failed (exit {result.returncode}): "
-                f"{result.stderr or result.stdout}"
+        try:
+            result = subprocess.run(
+                [
+                    python_exe,
+                    app_py,
+                    "-i",
+                    prepared_input.output_path,
+                    "-o",
+                    user_output_dir,
+                ],
+                cwd=self.app_dir,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=600,
             )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"MONAI Deploy app failed (exit {result.returncode}): "
+                    f"{result.stderr or result.stdout}"
+                )
+        finally:
+            if prepared_input.temp_dir:
+                shutil.rmtree(prepared_input.temp_dir, ignore_errors=True)
 
         output_files = [str(path) for path in Path(user_output_dir).rglob("*") if path.is_file()]
-        return {"output_dir": user_output_dir, "output_files": output_files}
+        return {
+            "output_dir": user_output_dir,
+            "output_files": output_files,
+            "dicom_metadata_policy": prepared_input.policy,
+            "dicom_metadata_repairs": {
+                "files_checked": prepared_input.files_checked,
+                "files_repaired": prepared_input.files_repaired,
+                "repaired_tags": list(prepared_input.repaired_tags),
+            },
+        }
 
 
 def log_monai_flow_bundle(
@@ -362,6 +544,12 @@ def log_monai_flow_bundle(
     output_example = {
         "output_dir": "/tmp/pixels_monai_flow_output",
         "output_files": ["/tmp/pixels_monai_flow_output/output.dcm"],
+        "dicom_metadata_policy": DEFAULT_DICOM_METADATA_POLICY,
+        "dicom_metadata_repairs": {
+            "files_checked": 0,
+            "files_repaired": 0,
+            "repaired_tags": [],
+        },
     }
     signature = infer_signature(
         model_input=input_example
@@ -428,6 +616,7 @@ def _build_prediction_payload(
     output_dir: Optional[str] = None,
     label_prompt: Any = None,
     modality: Optional[str] = None,
+    dicom_metadata_policy: Optional[str] = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"image_path": image_path}
     if output_dir:
@@ -437,6 +626,8 @@ def _build_prediction_payload(
         payload["label_prompt"] = prompt
     if modality:
         payload["modality"] = modality
+    if dicom_metadata_policy:
+        payload["dicom_metadata_policy"] = _normalize_dicom_metadata_policy(dicom_metadata_policy)
     return payload
 
 

@@ -144,6 +144,10 @@ else:
 # MAGIC
 # MAGIC - `image_path`: DICOM series directory
 # MAGIC - `output_dir`: durable Volume path for generated outputs
+# MAGIC
+# MAGIC The pyfunc wrapper uses `deidentified_safe` DICOM metadata handling by
+# MAGIC default, filling missing redacted Type 2 source fields as zero-length values
+# MAGIC in a temporary copy before DICOM SEG writing.
 
 # COMMAND ----------
 
@@ -174,10 +178,17 @@ print(f"Model URI: {model_uri}")
 import pandas as pd
 
 pyfunc_model = mlflow.pyfunc.load_model(model_uri)
-input_df = pd.DataFrame({"image_path": [input_dicom_dir], "output_dir": [output_dir]})
+input_df = pd.DataFrame(
+    {
+        "image_path": [input_dicom_dir],
+        "output_dir": [output_dir],
+    }
+)
 preds = pyfunc_model.predict(input_df)
 
 print(f"Output directory: {preds.get('output_dir')}")
+print(f"DICOM metadata policy: {preds.get('dicom_metadata_policy')}")
+print(f"DICOM metadata repairs: {preds.get('dicom_metadata_repairs')}")
 print("Output files:")
 for path in preds.get("output_files") or []:
     print(f"  {path}")

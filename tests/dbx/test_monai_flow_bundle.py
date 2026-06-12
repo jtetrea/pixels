@@ -10,12 +10,15 @@ from dbx.pixels.modelserving.bundles.monai_runtime import (
     load_monai_notebook_config,
 )
 from dbx.pixels.modelserving.bundles.monai_flow import (
+    DEFAULT_DICOM_METADATA_POLICY,
+    DICOMMetadataPreparation,
     MonaiDeployAppModel,
     MonaiFlowBundleTransformer,
     _build_prediction_payload,
     _log_pyfunc_model,
     _merge_requirements,
     _normalise_prediction_result,
+    _prepare_dicom_input_path,
     _relax_pipeline_generator_python_constraint,
     log_monai_deploy_app,
     log_monai_flow_bundle,
@@ -34,6 +37,7 @@ def test_build_prediction_payload_with_optional_fields():
         output_dir="/Volumes/main/schema/vol/output",
         label_prompt=[3, 4],
         modality="CT_BODY",
+        dicom_metadata_policy="deidentified_safe",
     )
 
     assert payload == {
@@ -41,7 +45,67 @@ def test_build_prediction_payload_with_optional_fields():
         "output_dir": "/Volumes/main/schema/vol/output",
         "label_prompt": "3,4",
         "modality": "CT_BODY",
+        "dicom_metadata_policy": "deidentified_safe",
     }
+
+
+def _write_minimal_dicom(path: Path, *, include_patient_birth_date: bool = True) -> None:
+    pytest.importorskip("pydicom")
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian, generate_uid
+
+    file_meta = FileMetaDataset()
+    file_meta.MediaStorageSOPClassUID = CTImageStorage
+    file_meta.MediaStorageSOPInstanceUID = generate_uid()
+    file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    file_meta.ImplementationClassUID = generate_uid()
+
+    dataset = FileDataset(str(path), {}, file_meta=file_meta, preamble=b"\0" * 128)
+    dataset.SOPClassUID = file_meta.MediaStorageSOPClassUID
+    dataset.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
+    dataset.PatientName = "Test^Patient"
+    dataset.PatientID = "test-patient"
+    if include_patient_birth_date:
+        dataset.PatientBirthDate = ""
+    dataset.PatientSex = ""
+    dataset.StudyInstanceUID = generate_uid()
+    dataset.SeriesInstanceUID = generate_uid()
+    dataset.StudyID = ""
+    dataset.StudyDate = ""
+    dataset.StudyTime = ""
+    dataset.AccessionNumber = ""
+    dataset.Modality = "CT"
+    dataset.Rows = 1
+    dataset.Columns = 1
+    dataset.save_as(str(path), enforce_file_format=True)
+
+
+def test_prepare_dicom_input_repairs_missing_patient_birth_date(tmp_path):
+    pydicom = pytest.importorskip("pydicom")
+    input_dir = tmp_path / "dicom"
+    input_dir.mkdir()
+    original = input_dir / "1.dcm"
+    _write_minimal_dicom(original, include_patient_birth_date=False)
+
+    prepared = _prepare_dicom_input_path(str(input_dir), policy="deidentified_safe")
+
+    try:
+        assert prepared.policy == DEFAULT_DICOM_METADATA_POLICY
+        assert prepared.files_checked == 1
+        assert prepared.files_repaired == 1
+        assert "PatientBirthDate" in prepared.repaired_tags
+        source = pydicom.dcmread(str(original), stop_before_pixels=True)
+        repaired = pydicom.dcmread(
+            str(Path(prepared.output_path) / "1.dcm"),
+            stop_before_pixels=True,
+        )
+        assert not hasattr(source, "PatientBirthDate")
+        assert repaired.PatientBirthDate == ""
+    finally:
+        if prepared.temp_dir:
+            import shutil
+
+            shutil.rmtree(prepared.temp_dir, ignore_errors=True)
 
 
 def test_normalise_prediction_result_from_dict():
@@ -128,6 +192,78 @@ def test_deploy_app_model_normalizes_inputs():
     assert model._normalize_input([{"image_path": "a", "output_dir": "b"}]) == {
         "image_path": "a",
         "output_dir": "b",
+    }
+
+
+def test_deploy_app_model_uses_repaired_dicom_input(monkeypatch, tmp_path):
+    app_dir = tmp_path / "app"
+    app_dir.mkdir()
+    (app_dir / "app.py").write_text("print('app')\n", encoding="utf-8")
+    (app_dir / "model").mkdir()
+    input_dir = tmp_path / "dicom"
+    input_dir.mkdir()
+    repaired_dir = tmp_path / "repaired"
+    repaired_dir.mkdir()
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    temp_dir = tmp_path / "repair-temp"
+    temp_dir.mkdir()
+    captured = {}
+
+    def fake_prepare(input_path, policy):
+        captured["input_path"] = input_path
+        captured["policy"] = policy
+        return DICOMMetadataPreparation(
+            input_path=input_path,
+            output_path=str(repaired_dir),
+            policy=policy,
+            files_checked=1,
+            files_repaired=1,
+            repaired_tags=("PatientBirthDate",),
+            temp_dir=str(temp_dir),
+        )
+
+    class Completed:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, cwd, env, capture_output, text, timeout):
+        captured["command"] = command
+        captured["cwd"] = cwd
+        captured["env"] = env
+        (output_dir / "seg.dcm").write_text("seg", encoding="utf-8")
+        return Completed()
+
+    monkeypatch.setattr(
+        "dbx.pixels.modelserving.bundles.monai_flow._prepare_dicom_input_path",
+        fake_prepare,
+    )
+    monkeypatch.setattr(
+        "dbx.pixels.modelserving.bundles.monai_flow.subprocess.run",
+        fake_run,
+    )
+
+    model = MonaiDeployAppModel()
+    model.app_dir = str(app_dir)
+    result = model.predict(
+        None,
+        {
+            "image_path": str(input_dir),
+            "output_dir": str(output_dir),
+        },
+    )
+
+    assert captured["input_path"] == str(input_dir)
+    assert captured["policy"] == DEFAULT_DICOM_METADATA_POLICY
+    assert captured["command"][captured["command"].index("-i") + 1] == str(repaired_dir)
+    assert captured["env"]["BUNDLE_PATH"] == str(app_dir / "model")
+    assert not temp_dir.exists()
+    assert result["output_files"] == [str(output_dir / "seg.dcm")]
+    assert result["dicom_metadata_repairs"] == {
+        "files_checked": 1,
+        "files_repaired": 1,
+        "repaired_tags": ["PatientBirthDate"],
     }
 
 
