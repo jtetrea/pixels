@@ -348,6 +348,29 @@ def test_notebook_top_cell_has_blank_public_config():
     assert 'Path("/Workspace" + notebook_path)' in notebook
 
 
+def test_model_specific_monai_notebooks_select_expected_bundles():
+    expected = {
+        "notebooks/09a-MONAI-Flow-Spleen-DICOM.py": "MONAI/spleen_ct_segmentation",
+        "notebooks/09b-MONAI-Flow-Pancreas-DICOM.py": (
+            "MONAI/pancreas_ct_dints_segmentation"
+        ),
+        "notebooks/09c-MONAI-Flow-WholeBody-DICOM.py": (
+            "MONAI/wholeBody_ct_segmentation"
+        ),
+    }
+
+    for notebook_path, model_id in expected.items():
+        notebook = Path(notebook_path).read_text(encoding="utf-8")
+
+        assert 'PIXELS_MONAI_VOLUME = ""' in notebook
+        assert 'PIXELS_MONAI_INPUT_DICOM_SUBPATH = ""' in notebook
+        assert 'PIXELS_MONAI_OUTPUT_SUBPATH = ""' in notebook
+        assert 'PIXELS_MONAI_EXPERIMENT_NAME = ""' in notebook
+        assert f'PIXELS_MONAI_MODEL_ID = "{model_id}"' in notebook
+        assert "catalog.schema.volume_name" not in notebook
+        assert "dbutils.widgets.text" not in notebook
+
+
 def test_relax_pipeline_generator_python_constraint(tmp_path):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text('requires-python = ">=3.10,<3.11"\n', encoding="utf-8")
