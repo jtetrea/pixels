@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -16,6 +17,7 @@ from dbx.pixels.modelserving.bundles.monai_flow import (
     _normalise_prediction_result,
     _prepare_dicom_input_path,
     _relax_pipeline_generator_python_constraint,
+    generate_monai_deploy_app,
     log_monai_deploy_app,
     log_monai_flow_bundle,
 )
@@ -263,6 +265,7 @@ def test_deploy_app_model_uses_repaired_dicom_input(monkeypatch, tmp_path):
     assert captured["policy"] == DEFAULT_DICOM_METADATA_POLICY
     assert captured["command"][captured["command"].index("-i") + 1] == str(repaired_dir)
     assert captured["env"]["BUNDLE_PATH"] == str(app_dir / "model")
+    assert captured["env"]["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
     assert not temp_dir.exists()
     assert result["output_files"] == [str(output_dir / "seg.dcm")]
     assert result["dicom_metadata_repairs"] == {
@@ -377,6 +380,155 @@ def test_relax_pipeline_generator_python_constraint(tmp_path):
 
     assert _relax_pipeline_generator_python_constraint(tmp_path)
     assert pyproject.read_text(encoding="utf-8") == 'requires-python = ">=3.10"\n'
+
+
+def test_generate_deploy_app_patches_segment_metadata(monkeypatch, tmp_path):
+    app_dir = tmp_path / "pancreas_app"
+
+    def fake_run_command(command, cwd=None):
+        assert command[:2] == ["pg", "gen"]
+        (app_dir / "model" / "configs").mkdir(parents=True)
+        (app_dir / "model" / "configs" / "metadata.json").write_text(
+            """
+            {
+              "network_data_format": {
+                "outputs": {
+                  "pred": {
+                    "label_def": {
+                      "0": "background",
+                      "1": "pancreas",
+                      "2": "pancreatic tumor"
+                    }
+                  }
+                }
+              }
+            }
+            """,
+            encoding="utf-8",
+        )
+        (app_dir / "app.py").write_text(
+            '''
+from highdicom.sr.coding import codes
+from monai.deploy.operators.dicom_seg_writer_operator import SegmentDescription
+
+class App:
+    def compose(self):
+        segment_descriptions = [
+            SegmentDescription(
+                segment_label="Generated",
+                segmented_property_category=codes.SCT.Organ,
+                segmented_property_type=codes.SCT.Organ,
+                algorithm_name="volumetric segmentation",
+                algorithm_family=codes.DCM.ArtificialIntelligence,
+                algorithm_version="0.1",
+            )
+        ]
+
+        custom_tags = {}
+''',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "dbx.pixels.modelserving.bundles.monai_flow.ensure_monai_deploy_pipeline_generator",
+        lambda **_kwargs: "pg",
+    )
+    monkeypatch.setattr(
+        "dbx.pixels.modelserving.bundles.monai_flow._run_command",
+        fake_run_command,
+    )
+
+    assert (
+        generate_monai_deploy_app(
+            model_id="MONAI/pancreas_ct_dints_segmentation",
+            output_dir=str(app_dir),
+        )
+        == str(app_dir)
+    )
+
+    patched = (app_dir / "app.py").read_text(encoding="utf-8")
+    assert 'segment_label="Pancreas"' in patched
+    assert 'segment_label="Pancreatic Tumor"' in patched
+    assert patched.count("SegmentDescription(") == 2
+    assert "codes.SCT.Pancreas" in patched
+    assert "codes.SCT.Neoplasm" in patched
+
+
+def test_generate_deploy_app_disables_large_multiclass_softmax(monkeypatch, tmp_path):
+    app_dir = tmp_path / "wholebody_app"
+    label_def = {"0": "background"}
+    label_def.update({str(index): f"organ {index}" for index in range(1, 21)})
+
+    def fake_run_command(command, cwd=None):
+        assert command[:2] == ["pg", "gen"]
+        (app_dir / "model" / "configs").mkdir(parents=True)
+        (app_dir / "model" / "configs" / "metadata.json").write_text(
+            """
+            {
+              "network_data_format": {
+                "outputs": {
+                  "pred": {"label_def": LABEL_DEF}
+                }
+              }
+            }
+            """.replace("LABEL_DEF", json.dumps(label_def)),
+            encoding="utf-8",
+        )
+        (app_dir / "model" / "configs" / "inference.json").write_text(
+            """
+            {
+              "postprocessing": {
+                "transforms": [
+                  {"_target_": "Activationsd", "keys": "pred", "softmax": true},
+                  {"_target_": "AsDiscreted", "keys": "pred", "argmax": true}
+                ]
+              }
+            }
+            """,
+            encoding="utf-8",
+        )
+        (app_dir / "app.py").write_text(
+            '''
+from highdicom.sr.coding import codes
+from monai.deploy.operators.dicom_seg_writer_operator import SegmentDescription
+
+class App:
+    def compose(self):
+        segment_descriptions = [
+            SegmentDescription(
+                segment_label="Generated",
+                segmented_property_category=codes.SCT.Organ,
+                segmented_property_type=codes.SCT.Organ,
+                algorithm_name="volumetric segmentation",
+                algorithm_family=codes.DCM.ArtificialIntelligence,
+                algorithm_version="0.1",
+            )
+        ]
+
+        custom_tags = {}
+''',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(
+        "dbx.pixels.modelserving.bundles.monai_flow.ensure_monai_deploy_pipeline_generator",
+        lambda **_kwargs: "pg",
+    )
+    monkeypatch.setattr(
+        "dbx.pixels.modelserving.bundles.monai_flow._run_command",
+        fake_run_command,
+    )
+
+    generate_monai_deploy_app(
+        model_id="MONAI/wholeBody_ct_segmentation",
+        output_dir=str(app_dir),
+    )
+
+    patched_config = (app_dir / "model" / "configs" / "inference.json").read_text(
+        encoding="utf-8"
+    )
+    assert '"softmax": false' in patched_config
+    assert patched_config.count('"softmax": false') == 1
 
 
 def test_transformer_stores_configuration():
