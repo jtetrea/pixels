@@ -381,6 +381,7 @@ def _render_segment_descriptions(
 
 
 def _patch_deploy_app_segments(app_dir: Path) -> Optional[List[str]]:
+    """Normalize generated DICOM SEG metadata without changing model inference."""
     app_py = app_dir / "app.py"
     metadata_path = app_dir / "model" / "configs" / "metadata.json"
     if not app_py.is_file() or not metadata_path.is_file():
@@ -411,68 +412,6 @@ def _patch_deploy_app_segments(app_dir: Path) -> Optional[List[str]]:
 
     app_py.write_text(patched, encoding="utf-8")
     return labels
-
-
-def _target_name(transform: Dict[str, Any]) -> str:
-    return str(transform.get("_target_", "")).rsplit(".", 1)[-1]
-
-
-def _has_argmax(transform: Dict[str, Any]) -> bool:
-    argmax = transform.get("argmax")
-    if isinstance(argmax, list):
-        return any(bool(value) for value in argmax)
-    return bool(argmax)
-
-
-def _disable_softmax_before_argmax(value: Any) -> int:
-    changes = 0
-    if isinstance(value, dict):
-        for child in value.values():
-            changes += _disable_softmax_before_argmax(child)
-        return changes
-
-    if not isinstance(value, list):
-        return 0
-
-    for index, item in enumerate(value):
-        changes += _disable_softmax_before_argmax(item)
-        if not isinstance(item, dict):
-            continue
-        if _target_name(item) != "Activationsd" or item.get("softmax") is not True:
-            continue
-        has_following_argmax = any(
-            isinstance(candidate, dict)
-            and _target_name(candidate) == "AsDiscreted"
-            and _has_argmax(candidate)
-            for candidate in value[index + 1 :]
-        )
-        if has_following_argmax:
-            item["softmax"] = False
-            changes += 1
-    return changes
-
-
-def _patch_large_multiclass_softmax(app_dir: Path, label_count: int) -> List[str]:
-    if label_count < 16:
-        return []
-
-    config_dir = app_dir / "model" / "configs"
-    if not config_dir.is_dir():
-        return []
-
-    changes = []
-    for config_path in sorted(config_dir.glob("*.json")):
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        count = _disable_softmax_before_argmax(config)
-        if count:
-            config_path.write_text(json.dumps(config, indent=4) + "\n", encoding="utf-8")
-            changes.append(f"{config_path.name}: disabled {count} softmax transform(s)")
-    return changes
-
-
-def _patch_generated_deploy_app(app_dir: Path) -> None:
-    labels = _patch_deploy_app_segments(app_dir) or []
-    _patch_large_multiclass_softmax(app_dir, label_count=len(labels))
 
 
 def ensure_monai_deploy_pipeline_generator(
@@ -562,7 +501,7 @@ def generate_monai_deploy_app(
     app_py = deploy_app_dir / "app.py"
     if not app_py.exists():
         raise FileNotFoundError(f"Generated app.py not found in {deploy_app_dir}")
-    _patch_generated_deploy_app(deploy_app_dir)
+    _patch_deploy_app_segments(deploy_app_dir)
     return str(deploy_app_dir)
 
 
@@ -670,7 +609,6 @@ class MonaiDeployAppModel(_PythonModelBase):
         env = os.environ.copy()
         env["BUNDLE_PATH"] = bundle_path
         env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
         try:
             result = subprocess.run(
                 [
