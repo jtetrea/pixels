@@ -94,6 +94,12 @@ workspace workflows. For production DICOMweb deployments with the split
 `dicom_web` + `dicom_web_gateway` Databricks Apps architecture, use
 `docs/DICOMWEB.md` as the source of truth.
 
+The experimental generated MONAI Deploy app + MLflow DICOM workflow is
+documented separately in [`docs/MONAI_FLOW_DICOM.md`](docs/MONAI_FLOW_DICOM.md).
+It covers the three model-specific demo notebooks, reusable helper modules,
+runtime pins, validation status, and the boundary between this branch and the
+existing MONAI Label/model-serving path.
+
 
 ---
 ## Getting started
@@ -283,5 +289,3 @@ DICOM® is recognized by the International Organization for Standardization as t
 | DICOGNITO            | A library and command line tool for anonymizing DICOM files | MIT  | https://github.com/blairconrad/dicognito |
 | FF3                  | FPE - Format Preserving Encryption with FF3 in Python | Apache-2.0 license  | https://github.com/mysto/python-fpe |
 | Vista3D              | MONAI Versatile Imaging SegmenTation and Annotation model | Apache-2.0 license (code) - NCLS v1 (model weight) | https://github.com/Project-MONAI/VISTA/tree/main/vista3d |
-
-

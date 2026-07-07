@@ -334,7 +334,7 @@ def test_notebook_config_uses_overrides(monkeypatch):
 
 
 def test_notebook_top_cell_has_blank_public_config():
-    notebook = Path("notebooks/09-MONAI-Flow-Bundle-Inference.py").read_text(
+    notebook = Path("notebooks/09a-MONAI-Flow-Spleen-DICOM.py").read_text(
         encoding="utf-8"
     )
 
@@ -370,6 +370,16 @@ def test_model_specific_monai_notebooks_select_expected_bundles():
         assert f'PIXELS_MONAI_MODEL_ID = "{model_id}"' in notebook
         assert "catalog.schema.volume_name" not in notebook
         assert "dbutils.widgets.text" not in notebook
+
+
+def test_generated_app_patching_remains_metadata_only():
+    source = Path("src/dbx/pixels/modelserving/bundles/monai_flow.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "_disable_softmax_before_argmax" not in source
+    assert "_patch_large_multiclass_softmax" not in source
+    assert "PYTORCH_CUDA_ALLOC_CONF" not in source
 
 
 def test_relax_pipeline_generator_python_constraint(tmp_path):
